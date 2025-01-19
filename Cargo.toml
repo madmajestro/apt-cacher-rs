@@ -10,6 +10,13 @@ repository = "https://github.com/cgzones/apt-cacher-rs"
 keywords = ["Debian", "proxy", "cache", "deb", "apt"]
 categories = ["caching"]
 edition = "2021"
+exclude = [
+   ".env",
+   ".github/",
+   ".gitignore",
+   "dev.conf",
+   "TODO",
+]
 
 [dependencies]
 anyhow = "1.0.81"
