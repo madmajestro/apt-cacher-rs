@@ -1,0 +1,33 @@
+# TODO
+
+* Use sendfile(2) to deliver cached files.
+  Requires either a hyper overhaul, since the behavior of sendfile(2) does not
+  work with the trait Body used everywhere, or writing the HTTP server by hand.
+
+* Use mmap(2) to read from files.
+  Requires usage of unsafe code (memmap2::Mmap::mmap()) and a rework of the
+  current body type, since we would not return bytes::Bytes but borrowd slices
+  of u8.
+
+* ipnet parser updates:
+  - https://github.com/krisprice/ipnet/issues/32
+  - https://github.com/rust-lang/rust/pull/83652/files
+
+
+* cache whether a mirror is https only and avoid initial http request?
+* proxy without caching on quota hit?
+* auto upgrade connections to https if supported by upstream repository?
+* verify checksums of downloaded files (on, off, lazy)
+* add option to limit archs (default: Dpkg::Arch::get_valid_arches())
+* cache package list files and prefetch them every 30min?
+* add option to import packages locally
+* add integration test
+* add throttling based on server loadavg?
+* RFC2612 requires bailout for HTTP/1.1 if no Host
+* test encoded newlines in URL
+
+# Utils
+
+curl --fail -o /dev/null --proxy 127.0.0.1:3142 http://deb.debian.org/debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb
+
+curl -i -L --http1.1 -H "user-agent: apt-cacher-rs/0.1.0" -H "host: apt.llvm.org" -H "if-modified-since: Mon, 12 Dec 2024 18:26:22 GMT" -H "cache-control: max-age=300" http://apt.llvm.org/unstable/dists/llvm-toolchain/InRelease

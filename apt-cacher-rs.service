@@ -1,0 +1,37 @@
+[Unit]
+Description=apt repository cache
+After=network.target
+
+[Service]
+Type=simple
+Restart=on-abnormal
+ExecStart=/usr/local/bin/apt-cacher-rs --skip-log-timestamp
+# create user via:
+#   adduser --system --group --quiet --gecos "apt-cacher-rs daemon" --no-create-home --home /var/lib/apt-cacher-rs apt-cacher-rs
+User=apt-cacher-rs
+
+# Hardening
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+StateDirectory=apt-cacher-rs
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

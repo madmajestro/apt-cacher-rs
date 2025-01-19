@@ -1,0 +1,5 @@
+/cache/
+/apt-cacher-rs.db
+
+/target/
+/.vscode/

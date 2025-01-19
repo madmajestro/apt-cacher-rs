@@ -1,0 +1,40 @@
+# apt-cacher-rs
+
+[![Version info](https://img.shields.io/crates/v/apt-cacher-rs.svg)](https://crates.io/crates/apt-cacher-rs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE?raw=true)
+
+`apt-cacher-rs` is a simple caching proxy daemon for Debian style repositories.
+It is inspired by and an alternative to [`apt-cacher`](https://salsa.debian.org/LeePen/apt-cacher) and [`apt-cacher-ng`](https://www.unix-ag.uni-kl.de/~bloch/acng/).
+
+## How to use
+
+First install `apt-cacher-rs` on a network local system.
+To automatically manage the daemon via systemd an example [service file](apt-cacher-rs.service) is included.
+Then add the following configuration file on every client system that should utilize the proxy:
+
+*/etc/apt/apt.conf.d/30proxy*
+```
+Acquire::http::Proxy "http://<proxy_ip>:3142/";
+```
+
+If your sources contain HTTPS repositories you like to cache as well, change their URL schema to *http://* to cache their packages.
+Note that connections from the client to the proxy are unencrypted (but all packages are by default verified by `apt(8)` after download to have a valid GPG signature).
+
+## Web interface
+
+`apt-cacher-rs` contains a minimal web interface for some statistics at *`http://<proxy-ip>:3142/`*, and important logs can be viewed at *`http://<proxy-ip>:3142/logs`*.
+
+## Cleanup
+
+Packages in the cache that are no longer referenced by any known upstream repository are pruned every 24h, unless they have been downloaded less than 3 days ago.
+The list of known upstream repositories is gathered by inspecting proxied package list requests (i.e. by *apt update*).
+The cleanup can also be manually triggered by sending the signal `USR1` to the `apt-cacher-rs` process.
+
+## Security
+
+The proxy interface should not be made public available to the internet or completely untrusted clients.
+That could lead to Denial of Service issues, like congesting the network traffic or exhausting the filesystem's capacity.
+
+## License
+
+[MIT License](LICENSE?raw=true)
