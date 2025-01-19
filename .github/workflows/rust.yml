@@ -35,7 +35,28 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+  outdated:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check for outdated crates
+      run: cargo outdated --exit-code 1
+
+  deny:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check for denied crates
+      run: cargo deny check
+
   spaces-check:
+
     name: Spaces Check
     runs-on: ubuntu-latest
     steps:
@@ -45,6 +66,7 @@ jobs:
         run: git diff-tree --check $(git hash-object -t tree /dev/null) HEAD
 
   spellings:
+
     name: Codespell
     runs-on: ubuntu-latest
     steps:
