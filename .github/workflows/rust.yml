@@ -42,6 +42,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install cargo outdated
+      run: cargo install cargo-outdated
+
     - name: Check for outdated crates
       run: cargo outdated --exit-code 1
 
@@ -51,6 +54,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Install cargo deny
+      run: cargo install cargo-deny
 
     - name: Check for denied crates
       run: cargo deny check
