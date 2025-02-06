@@ -74,10 +74,10 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, trace, warn, LevelFilter};
 use pin_project::{pin_project, pinned_drop};
-use rand::distributions::Alphanumeric;
-use rand::distributions::Bernoulli;
+use rand::distr::Alphanumeric;
+use rand::distr::Bernoulli;
 use rand::prelude::Distribution;
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
 use simplelog::CombinedLogger;
@@ -312,7 +312,7 @@ async fn tokio_mkstemp(
     path: &Path,
     mode: u32,
 ) -> Result<(tokio::fs::File, PathBuf), tokio::io::Error> {
-    let mut rng: StdRng = SeedableRng::from_entropy();
+    let mut rng = SmallRng::from_os_rng();
 
     let mut buf = path.to_path_buf();
 
@@ -1878,7 +1878,7 @@ async fn serve_new_file(
             - curr_downloads.saturating_sub(1) as f64 * gcfg.experimental_parallel_hack_factor)
             .max(0.0);
         let d = Bernoulli::new(p).expect("p is valid");
-        let v = d.sample(&mut rand::thread_rng());
+        let v = d.sample(&mut rand::rng());
         debug!("{v} is from a Bernoulli distribution with success probability {p} from count {curr_downloads}");
 
         if v {
