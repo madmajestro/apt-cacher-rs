@@ -9,7 +9,7 @@ homepage = "https://github.com/cgzones/apt-cacher-rs"
 repository = "https://github.com/cgzones/apt-cacher-rs"
 keywords = ["Debian", "proxy", "cache", "deb", "apt"]
 categories = ["caching"]
-edition = "2021"
+edition = "2024"
 exclude = [
    ".env",
    ".github/",
