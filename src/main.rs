@@ -127,6 +127,8 @@ const APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PK
 
 const RETENTION_TIME: Duration = Duration::from_secs(8 * 7 * 24 * 60 * 60); /* 8 weeks */
 
+const VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER: NonZeroU64 = nonzero!(1024 * 1024); /* 1MB */
+
 struct RateChecker {
     buf: SumRingBuffer<usize>,
     last: std::time::Instant,
@@ -244,7 +246,9 @@ enum ChannelBodyError {
 
 struct ChannelBody {
     receiver: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, ChannelBodyError>>,
-    remaining_bytes: Option<u64>,
+    content_length: ContentLength,
+    remaining: SizeHint,
+    received: u64,
     complete: bool,
 }
 
@@ -252,11 +256,22 @@ impl ChannelBody {
     #[must_use]
     fn new(
         receiver: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, ChannelBodyError>>,
-        size: NonZeroU64,
+        content_length: ContentLength,
     ) -> Self {
+        let remaining = match content_length {
+            ContentLength::Exact(size) => SizeHint::with_exact(size.get()),
+            ContentLength::Unknown(size) => {
+                let mut sz = SizeHint::new();
+                sz.set_upper(size.get());
+                sz
+            }
+        };
+
         Self {
             receiver,
-            remaining_bytes: Some(size.get()),
+            content_length,
+            remaining,
+            received: 0,
             complete: false,
         }
     }
@@ -267,10 +282,7 @@ impl Body for ChannelBody {
     type Error = ProxyCacheError;
 
     fn size_hint(&self) -> hyper::body::SizeHint {
-        match self.remaining_bytes {
-            Some(val) => SizeHint::with_exact(val),
-            None => SizeHint::default(),
-        }
+        self.remaining.clone()
     }
 
     fn is_end_stream(&self) -> bool {
@@ -293,14 +305,35 @@ impl Body for ChannelBody {
         msg.map(|d| {
             d.map(|b| match b {
                 Ok(data) => {
-                    if let Some(remaining_bytes) = &mut self.remaining_bytes {
-                        match remaining_bytes.overflowing_sub(data.len() as u64) {
-                            (_, true) => self.remaining_bytes = None,
-                            (val, false) => *remaining_bytes = val,
+                    let datalen = data.len() as u64;
+
+                    match (self.remaining.exact(), self.remaining.upper()) {
+                        (Some(size), _) => match size.overflowing_sub(datalen) {
+                            (_, true) => Err(ProxyCacheError::ContentTooLarge(
+                                self.content_length,
+                                self.received + datalen,
+                            )),
+                            (val, false) => {
+                                self.received += datalen;
+                                self.remaining.set_exact(val);
+                                Ok(Frame::data(data))
+                            }
+                        },
+                        (None, Some(size)) => match size.overflowing_sub(datalen) {
+                            (_, true) => Err(ProxyCacheError::ContentTooLarge(
+                                self.content_length,
+                                self.received + datalen,
+                            )),
+                            (val, false) => {
+                                self.received += datalen;
+                                self.remaining.set_upper(val);
+                                Ok(Frame::data(data))
+                            }
+                        },
+                        (None, None) => {
+                            unreachable!("size hint is either exact or has an upper limit");
                         }
                     }
-
-                    Ok(Frame::data(data))
                 }
                 Err(err) => Err(err.into()),
             })
@@ -804,7 +837,7 @@ impl<'a> Borrow<dyn AsActiveDownloadKeyRef + 'a> for ActiveDownloadKey {
 #[derive(Debug)]
 enum ActiveDownloadStatus {
     Init,
-    Download(PathBuf, NonZeroU64, tokio::sync::watch::Receiver<u32>),
+    Download(PathBuf, ContentLength, tokio::sync::watch::Receiver<u32>),
     Finished(PathBuf),
     Aborted(ProxyCacheError),
 }
@@ -872,7 +905,7 @@ impl ActiveDownloads {
             for (_key, download) in ads.iter() {
                 let d = download.blocking_lock();
                 if let ActiveDownloadStatus::Download(_, size, _) = &*d {
-                    sum += size.get();
+                    sum += size.upper().get();
                 }
             }
 
@@ -910,7 +943,7 @@ async fn download_file(
     conn_details: &ConnectionDetails,
     warn_on_override: bool,
     status: &Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
-    body: Incoming,
+    input: (Incoming, ContentLength),
     output: (tokio::fs::File, PathBuf),
     tx: tokio::sync::watch::Sender<u32>,
 ) {
@@ -921,6 +954,9 @@ async fn download_file(
         conn_details.client.ip().to_canonical()
     );
     let start = Instant::now();
+
+    let body = input.0;
+    let content_length = input.1;
 
     let mut bytes = 0;
     let mut last_send_bytes = 0;
@@ -976,11 +1012,24 @@ async fn download_file(
         };
         if let Ok(mut chunk) = frame.into_data() {
             bytes += chunk.len() as u64;
+
+            if bytes > content_length.upper().get() {
+                warn!(
+                    "More bytes received than expected: {bytes} vs {}",
+                    content_length.upper()
+                );
+                *status.lock().await = ActiveDownloadStatus::Aborted(
+                    ProxyCacheError::ContentTooLarge(content_length, bytes),
+                );
+                return;
+            }
+
             if let Err(err) = writer.write_all_buf(&mut chunk).await {
                 error!("Error writing to file {}:  {err}", output.1.display());
                 *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
                 return;
             }
+
             if connected && bytes > buf_size as u64 + last_send_bytes {
                 if let Err(err) = tx.send(send_id) {
                     error!(
@@ -993,6 +1042,11 @@ async fn download_file(
                 last_send_bytes = bytes;
             }
         }
+    }
+
+    match content_length {
+        ContentLength::Exact(size) => assert_eq!(bytes, size.get()),
+        ContentLength::Unknown(size) => assert!(bytes <= size.get()),
     }
 
     if let Err(err) = writer.flush().await {
@@ -1057,7 +1111,26 @@ async fn download_file(
         }
 
         match tokio::fs::rename(&output.1, &dest_path).await {
-            Ok(()) => *locked_status = ActiveDownloadStatus::Finished(dest_path),
+            Ok(()) => {
+                {
+                    let diff =
+                        content_length.upper().get().checked_sub(bytes).expect(
+                            "should not download more bytes than announced via ContentLength",
+                        );
+                    if diff != 0 {
+                        let mut mg_cache_size = RUNTIMEDETAILS
+                            .get()
+                            .expect("global is set in main()")
+                            .cache_size
+                            .lock()
+                            .expect("other uses should not panic");
+                        *mg_cache_size = mg_cache_size
+                            .checked_sub(diff)
+                            .expect("cache size should not underflow");
+                    }
+                }
+                *locked_status = ActiveDownloadStatus::Finished(dest_path);
+            }
             Err(err) => {
                 error!(
                     "Failed to rename file `{}` to `{}`:  {err}",
@@ -1105,7 +1178,7 @@ async fn serve_unfinished_file(
     mut file: tokio::fs::File,
     file_path: PathBuf,
     status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
-    content_length: NonZeroU64,
+    content_length: ContentLength,
     mut receiver: tokio::sync::watch::Receiver<u32>,
 ) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
     let md = match file.metadata().await {
@@ -1144,7 +1217,7 @@ async fn serve_unfinished_file(
     tokio::task::spawn(async move {
         let start = Instant::now();
         trace!(
-            "Starting stream task for downloading file {} from mirror {} with length {content_length} for client {}...",
+            "Starting stream task for downloading file {} from mirror {} with length {content_length:?} for client {}...",
             file_path.display(),
             conn_details.mirror,
             conn_details.client.ip().to_canonical()
@@ -1257,7 +1330,7 @@ async fn serve_unfinished_file(
         }
     });
 
-    let response_builder = Response::builder()
+    let mut response_builder = Response::builder()
         .status(200)
         .header(CONNECTION, HeaderValue::from_static("keep-alive"))
         .header(
@@ -1266,12 +1339,18 @@ async fn serve_unfinished_file(
         )
         .header(ACCEPT_RANGES, HeaderValue::from_static("bytes"))
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .header(CONTENT_LENGTH, HeaderValue::from(content_length.get()))
         .header(
             LAST_MODIFIED,
             HeaderValue::try_from(systemtime_to_http_datetime(create_time))
                 .expect("Http datetime is valid"),
         );
+    if let ContentLength::Exact(size) = content_length {
+        let r = response_builder
+            .headers_mut()
+            .expect("request should be valid")
+            .append(CONTENT_LENGTH, HeaderValue::from(size.get()));
+        assert!(!r);
+    }
 
     let channel_body = ChannelBody::new(rx, content_length);
 
@@ -1415,6 +1494,22 @@ fn is_host_allowed(requested_host: &str) -> bool {
         .allowed_mirrors
         .iter()
         .any(|host| host.permits(requested_host))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ContentLength {
+    /// An exact size
+    Exact(NonZeroU64),
+    /// A limit for an unknown size
+    Unknown(NonZeroU64),
+}
+
+impl ContentLength {
+    const fn upper(&self) -> NonZeroU64 {
+        match self {
+            Self::Exact(s) | Self::Unknown(s) => *s,
+        }
+    }
 }
 
 #[must_use]
@@ -1751,22 +1846,26 @@ async fn serve_new_file(
         return response;
     }
 
-    let Some(content_length) = fwd_response.headers().get(CONTENT_LENGTH).and_then(|hv| {
+    let content_length = match fwd_response.headers().get(CONTENT_LENGTH).and_then(|hv| {
         hv.to_str()
             .ok()
             .and_then(|ct| ct.parse::<NonZeroU64>().ok())
-    }) else {
-        warn!(
-            "Could not extract content-length from header for file `{}` from mirror {}: {fwd_response:?}",
-            conn_details.debname, conn_details.mirror
-        );
-        state
-            .active_downloads
-            .remove(&conn_details.mirror, &conn_details.debname);
-        return quick_response(
-            StatusCode::BAD_GATEWAY,
-            "Upstream resource has no content length",
-        );
+    }) {
+        Some(size) => ContentLength::Exact(size),
+        None if is_volatile => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
+        None => {
+            warn!(
+                "Could not extract content-length from header for file `{}` from mirror {}: {fwd_response:?}",
+                conn_details.debname, conn_details.mirror
+            );
+            state
+                .active_downloads
+                .remove(&conn_details.mirror, &conn_details.debname);
+            return quick_response(
+                StatusCode::BAD_GATEWAY,
+                "Upstream resource has no content length",
+            );
+        }
     };
 
     if let Some(quota) = global_config().disk_quota {
@@ -1777,6 +1876,7 @@ async fn serve_new_file(
             .lock()
             .expect("other uses should not panic");
         let quota_reached = content_length
+            .upper()
             .checked_add(*mg_cache_size)
             .is_some_and(|s| s > quota);
 
@@ -1784,7 +1884,7 @@ async fn serve_new_file(
             let cache_size = *mg_cache_size;
             drop(mg_cache_size);
             warn!(
-                "Disk quota reached: file={} cache_size={} content_length={} quota={}",
+                "Disk quota reached: file={} cache_size={} content_length={:?} quota={}",
                 conn_details.debname, cache_size, content_length, quota
             );
             state
@@ -1794,7 +1894,7 @@ async fn serve_new_file(
         }
 
         *mg_cache_size = mg_cache_size
-            .checked_add(content_length.get())
+            .checked_add(content_length.upper().get())
             .expect("should not overflow by previous check");
         *mg_cache_size = mg_cache_size
             .checked_sub(prev_file_size)
@@ -1827,7 +1927,7 @@ async fn serve_new_file(
                     .lock()
                     .expect("other uses should not panic");
 
-                *mg_cache_size = mg_cache_size.saturating_sub(content_length.get());
+                *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
             }
 
             state
@@ -1853,7 +1953,16 @@ async fn serve_new_file(
     let db = state.database.clone();
     let curr_downloads = state.active_downloads.download_count();
     tokio::task::spawn(async move {
-        download_file(db, &cd, !is_volatile, &st, body, (outfile, outpath), tx).await;
+        download_file(
+            db,
+            &cd,
+            !is_volatile,
+            &st,
+            (body, content_length),
+            (outfile, outpath),
+            tx,
+        )
+        .await;
         if !matches!(*(st.lock().await), ActiveDownloadStatus::Finished(_)) {
             let mut mg_cache_size = RUNTIMEDETAILS
                 .get()
@@ -1862,7 +1971,7 @@ async fn serve_new_file(
                 .lock()
                 .expect("other uses should not panic");
 
-            *mg_cache_size = mg_cache_size.saturating_sub(content_length.get());
+            *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
         }
         state.active_downloads.remove(&cd.mirror, &cd.debname);
     });
@@ -1873,7 +1982,7 @@ async fn serve_new_file(
         && gcfg.experimental_parallel_hack_enabled
         && gcfg
             .experimental_parallel_hack_minsize
-            .is_some_and(|size| content_length > size)
+            .is_some_and(|size| content_length.upper() > size)
     {
         #[expect(clippy::cast_precision_loss)]
         let p = (1.0

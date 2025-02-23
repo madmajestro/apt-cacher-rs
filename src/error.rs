@@ -1,5 +1,6 @@
 use std::{net::IpAddr, num::NonZero, time::Duration};
 
+use crate::ContentLength;
 use crate::{ChannelBodyError, deb_mirror::Mirror, humanfmt::HumanFmt};
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,7 @@ pub(crate) enum ProxyCacheError {
     ClientDownloadRate(ClientDownloadRate),
     MirrorDownloadRate(MirrorDownloadRate),
     Memfd(memfd::Error),
+    ContentTooLarge(ContentLength, u64),
     #[expect(dead_code)]
     Generic(String),
 }
@@ -79,6 +81,14 @@ impl std::fmt::Display for ProxyCacheError {
                 )
             }
             Self::Memfd(e) => e.fmt(f),
+            Self::ContentTooLarge(orig, datalen) => {
+                write!(
+                    f,
+                    "Received data of {} too larger than announced {:?}",
+                    HumanFmt::Size(*datalen),
+                    orig,
+                )
+            }
             Self::Generic(msg) => msg.fmt(f),
         }
     }
