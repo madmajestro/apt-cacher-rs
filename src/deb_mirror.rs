@@ -402,17 +402,23 @@ mod tests {
          */
 
         assert_eq!(
-            parse_request_path("debian/dists/sid/main/binary-amd64/Packages.diff/by-hash/SHA256/491ddac17f4b86d771a457e6b084c499dfeb9ee29004b92d5d05fe79f1f0dede"),
+            parse_request_path(
+                "debian/dists/sid/main/binary-amd64/Packages.diff/by-hash/SHA256/491ddac17f4b86d771a457e6b084c499dfeb9ee29004b92d5d05fe79f1f0dede"
+            ),
             None
         );
 
         assert_eq!(
-            parse_request_path("debian/dists/sid/main/binary-amd64/Packages.diff/T-2024-04-16-1405.22-F-2024-04-15-2018.42.gz"),
+            parse_request_path(
+                "debian/dists/sid/main/binary-amd64/Packages.diff/T-2024-04-16-1405.22-F-2024-04-15-2018.42.gz"
+            ),
             None
         );
 
         assert_eq!(
-            parse_request_path("debian/dists/sid/main/dep11/by-hash/SHA256/cf31e359ca5863e438c1b2d3ddaa1d473519ad26bd71e3dac7803dade82e4482"),
+            parse_request_path(
+                "debian/dists/sid/main/dep11/by-hash/SHA256/cf31e359ca5863e438c1b2d3ddaa1d473519ad26bd71e3dac7803dade82e4482"
+            ),
             None
         );
 

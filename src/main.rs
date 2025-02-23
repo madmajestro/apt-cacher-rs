@@ -31,8 +31,8 @@ use std::num::NonZeroU64;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::task::Poll::{Pending, Ready};
@@ -42,12 +42,10 @@ use std::time::SystemTime;
 
 use clap::Parser;
 use futures_util::TryStreamExt;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::body::Frame;
 use hyper::body::Incoming;
 use hyper::body::SizeHint;
-use hyper::header::HeaderName;
-use hyper::header::HeaderValue;
 use hyper::header::ACCEPT;
 use hyper::header::ACCEPT_RANGES;
 use hyper::header::AGE;
@@ -58,6 +56,8 @@ use hyper::header::CONTENT_RANGE;
 use hyper::header::CONTENT_TYPE;
 use hyper::header::DATE;
 use hyper::header::HOST;
+use hyper::header::HeaderName;
+use hyper::header::HeaderValue;
 use hyper::header::IF_MODIFIED_SINCE;
 use hyper::header::IF_RANGE;
 use hyper::header::LAST_MODIFIED;
@@ -68,18 +68,18 @@ use hyper::header::SERVER;
 use hyper::header::USER_AGENT;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{body::Body, Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode, body::Body};
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
-use log::{debug, error, info, trace, warn, LevelFilter};
+use log::{LevelFilter, debug, error, info, trace, warn};
 use pin_project::{pin_project, pinned_drop};
+use rand::Rng;
+use rand::SeedableRng;
 use rand::distr::Alphanumeric;
 use rand::distr::Bernoulli;
 use rand::prelude::Distribution;
 use rand::rngs::SmallRng;
-use rand::Rng;
-use rand::SeedableRng;
 use simplelog::CombinedLogger;
 use simplelog::ConfigBuilder;
 use simplelog::WriteLogger;
@@ -94,16 +94,16 @@ use tokio::signal::unix::SignalKind;
 use crate::config::Config;
 use crate::config::DomainName;
 use crate::database::Database;
+use crate::deb_mirror::Mirror;
+use crate::deb_mirror::Origin;
+use crate::deb_mirror::OriginRef;
+use crate::deb_mirror::ResourceFile;
 use crate::deb_mirror::parse_request_path;
 use crate::deb_mirror::valid_architecture;
 use crate::deb_mirror::valid_component;
 use crate::deb_mirror::valid_distribution;
 use crate::deb_mirror::valid_filename;
 use crate::deb_mirror::valid_mirrorname;
-use crate::deb_mirror::Mirror;
-use crate::deb_mirror::Origin;
-use crate::deb_mirror::OriginRef;
-use crate::deb_mirror::ResourceFile;
 use crate::error::ProxyCacheError;
 use crate::http_range::http_datetime_to_systemtime;
 use crate::http_range::http_parse_range;
@@ -1714,7 +1714,8 @@ async fn serve_new_file(
                 }
             }
 
-            info!("File {} from mirror {} is up-to-date in cache, serving to client {} with older version",
+            info!(
+                "File {} from mirror {} is up-to-date in cache, serving to client {} with older version",
                 conn_details.debname,
                 conn_details.mirror,
                 conn_details.client.ip().to_canonical()
@@ -1757,7 +1758,8 @@ async fn serve_new_file(
     }) else {
         warn!(
             "Could not extract content-length from header for file `{}` from mirror {}: {fwd_response:?}",
-           conn_details.debname, conn_details.mirror);
+            conn_details.debname, conn_details.mirror
+        );
         state
             .active_downloads
             .remove(&conn_details.mirror, &conn_details.debname);
@@ -1879,7 +1881,9 @@ async fn serve_new_file(
             .max(0.0);
         let d = Bernoulli::new(p).expect("p is valid");
         let v = d.sample(&mut rand::rng());
-        debug!("{v} is from a Bernoulli distribution with success probability {p} from count {curr_downloads}");
+        debug!(
+            "{v} is from a Bernoulli distribution with success probability {p} from count {curr_downloads}"
+        );
 
         if v {
             debug!(
@@ -2156,7 +2160,9 @@ async fn pre_process_client_request(
 
     let requested_path = req.uri().path();
 
-    debug!("Requested host: `{requested_host}`; Aliased host: `{aliased_host:?}`; Requested path: `{requested_path}`");
+    debug!(
+        "Requested host: `{requested_host}`; Aliased host: `{aliased_host:?}`; Requested path: `{requested_path}`"
+    );
 
     if let Some(resource) = parse_request_path(requested_path) {
         match resource {
@@ -2264,7 +2270,9 @@ async fn pre_process_client_request(
                     return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
                 }
 
-                debug!("Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded filename: `{filename}`");
+                debug!(
+                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded filename: `{filename}`"
+                );
 
                 let conn_details = ConnectionDetails {
                     client,
@@ -2352,7 +2360,9 @@ async fn pre_process_client_request(
                     return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
                 }
 
-                debug!("Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded architecture: `{architecture}`; Decoded filename: `{filename}`");
+                debug!(
+                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded architecture: `{architecture}`; Decoded filename: `{filename}`"
+                );
 
                 let conn_details = ConnectionDetails {
                     client,

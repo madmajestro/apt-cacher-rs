@@ -8,19 +8,19 @@ use std::{
 };
 
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use log::{debug, error, info, trace, warn};
 use memfd::MemfdOptions;
 use tokio::io::{AsyncBufReadExt, BufWriter};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::{
+    ActiveDownloads, Client, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
     database::{Database, MirrorEntry},
     deb_mirror::{Mirror, UriFormat},
     empty, global_config,
     humanfmt::HumanFmt,
-    info_once, request_with_retry, task_cache_scan, ActiveDownloads, Client, ProxyCacheError,
-    RETENTION_TIME, RUNTIMEDETAILS,
+    info_once, request_with_retry, task_cache_scan,
 };
 
 async fn body_to_file(body: &mut Incoming, file: tokio::fs::File) -> Result<(), ProxyCacheError> {
@@ -332,7 +332,10 @@ async fn task_cleanup_impl(
             // TODO: check for inconsistencies and repair
             warn!(
                 "actual cache size: {}; stored cache size: {}; active download size: {}; size difference: {}",
-                actual_cache_size, stored_cache_size, active_downloading_size, stored_cache_size.abs_diff(actual_cache_size + active_downloading_size)
+                actual_cache_size,
+                stored_cache_size,
+                active_downloading_size,
+                stored_cache_size.abs_diff(actual_cache_size + active_downloading_size)
             );
         }
     }

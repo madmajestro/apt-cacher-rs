@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use ipnet::IpNet;
 use log::LevelFilter;
 use serde::Deserialize;
@@ -667,11 +667,11 @@ impl Config {
                 if err.kind() == std::io::ErrorKind::NotFound
                     && file == Path::new(DEFAULT_CONFIGURATION_PATH) =>
             {
-                return Ok((Self::default(), true))
+                return Ok((Self::default(), true));
             }
             Err(err) => {
                 return Err(err)
-                    .with_context(|| format!("Failed to read file `{}`", file.display()))
+                    .with_context(|| format!("Failed to read file `{}`", file.display()));
             }
         };
 

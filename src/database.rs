@@ -4,10 +4,10 @@ use std::{
     time::Duration,
 };
 
-use log::{debug, info, trace, LevelFilter};
+use log::{LevelFilter, debug, info, trace};
 use sqlx::{
-    query, query_as, sqlite::SqliteConnectOptions, ConnectOptions, Error, Executor, Pool, Sqlite,
-    SqlitePool,
+    ConnectOptions, Error, Executor, Pool, Sqlite, SqlitePool, query, query_as,
+    sqlite::SqliteConnectOptions,
 };
 
 use crate::{

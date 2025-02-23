@@ -1,6 +1,6 @@
 use std::{net::IpAddr, num::NonZero, time::Duration};
 
-use crate::{deb_mirror::Mirror, humanfmt::HumanFmt, ChannelBodyError};
+use crate::{ChannelBodyError, deb_mirror::Mirror, humanfmt::HumanFmt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientDownloadRate {
@@ -51,7 +51,10 @@ impl std::fmt::Display for ProxyCacheError {
                     f,
                     "Timeout occurred for client {} after a download rate of {} for the last {} seconds",
                     client_ip.to_canonical(),
-                    HumanFmt::Rate(*total as u64, Duration::from_secs((*timeout_secs).get() as u64)),
+                    HumanFmt::Rate(
+                        *total as u64,
+                        Duration::from_secs((*timeout_secs).get() as u64)
+                    ),
                     timeout_secs,
                 )
             }
@@ -68,7 +71,10 @@ impl std::fmt::Display for ProxyCacheError {
                     mirror,
                     debname,
                     client_ip.to_canonical(),
-                    HumanFmt::Rate(*total_size as u64, Duration::from_secs((*timeout_secs).get() as u64)),
+                    HumanFmt::Rate(
+                        *total_size as u64,
+                        Duration::from_secs((*timeout_secs).get() as u64)
+                    ),
                     timeout_secs,
                 )
             }

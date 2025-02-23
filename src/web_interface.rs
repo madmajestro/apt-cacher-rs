@@ -8,19 +8,19 @@ use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
 use http_body_util::combinators::BoxBody;
 use hyper::{
-    header::{HeaderValue, SERVER},
     Request, Response, StatusCode,
+    header::{HeaderValue, SERVER},
 };
 use log::{debug, error, trace};
+use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
-use time::OffsetDateTime;
 
-use crate::global_config;
-use crate::HumanFmt;
 use crate::APP_VERSION;
+use crate::HumanFmt;
 use crate::RUNTIMEDETAILS;
-use crate::{database::Database, error::ProxyCacheError, full, quick_response, APP_NAME, LOGSTORE};
+use crate::global_config;
+use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full, quick_response};
 
 const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
     format_description!("[day] [month repr:short] [year] [hour]:[minute]:[second]");

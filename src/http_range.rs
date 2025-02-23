@@ -1,11 +1,11 @@
 use std::cmp::min;
 use std::time::SystemTime;
 
-use time::format_description::well_known::Rfc2822;
-use time::format_description::FormatItem;
-use time::macros::format_description;
 use time::Duration;
-use time::{macros::offset, OffsetDateTime};
+use time::format_description::FormatItem;
+use time::format_description::well_known::Rfc2822;
+use time::macros::format_description;
+use time::{OffsetDateTime, macros::offset};
 
 use crate::warn_once_or_info;
 
