@@ -1490,6 +1490,10 @@ enum CacheFileStat<'a> {
 }
 
 fn is_host_allowed(requested_host: &str) -> bool {
+    if global_config().allowed_mirrors.is_empty() {
+        return true;
+    }
+
     global_config()
         .allowed_mirrors
         .iter()
