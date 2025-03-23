@@ -69,6 +69,9 @@ use hyper::header::USER_AGENT;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, body::Body};
+#[cfg(feature = "tls_rustls")]
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+#[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
@@ -2702,7 +2705,25 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     })?;
     info!("Listening on http://{addr}");
 
-    let https_connector = hyper_tls::HttpsConnector::new();
+    #[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
+    let https_connector = HttpsConnector::new();
+
+    #[cfg(feature = "tls_rustls")]
+    let https_connector = {
+        /* Set a process wide default crypto provider. */
+        //let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let tls_cfg = rustls::ClientConfig::builder()
+            .with_native_roots()?
+            .with_no_client_auth();
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls_cfg)
+            .https_or_http()
+            .enable_http1()
+            .build()
+    };
+
     let mut timeout_connector = hyper_timeout::TimeoutConnector::new(https_connector);
     let http_timeout = match config.http_timeout {
         x if x.is_zero() => None,

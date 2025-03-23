@@ -20,15 +20,23 @@ jobs:
     - name: Setup development database
       run: sqlite3 apt-cacher-rs.db < db.sqlite
 
-    - name: Build
+    - name: Build (default features)
       run: cargo build --verbose
+      env:
+          RUSTFLAGS: '-D warnings'
+
+    - name: Build (tls_rustls feature)
+      run: cargo build --verbose --features tls_rustls
       env:
           RUSTFLAGS: '-D warnings'
 
     - name: Format
       run: cargo fmt --all --check
 
-    - name: Clippy
+    - name: Clippy (default features)
+      run: cargo clippy --all-targets -- -D warnings -D clippy::pedantic
+
+    - name: Clippy (all features)
       run: cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic
 
     - name: Run tests

@@ -30,6 +30,11 @@ Packages in the cache that are no longer referenced by any known upstream reposi
 The list of known upstream repositories is gathered by inspecting proxied package list requests (i.e. by *apt update*).
 The cleanup can also be manually triggered by sending the signal `USR1` to the `apt-cacher-rs` process.
 
+## TLS
+
+By default the system provides TLS implementation is used.
+To use [`rustls`](https://github.com/rustls/rustls) as backend enable the cargo feature `tls_rustls`.
+
 ## Security
 
 The proxy interface should not be made public available to the internet or completely untrusted clients.
