@@ -298,7 +298,9 @@ async fn task_cleanup_impl(
         bytes_removed += cleanup_result.bytes_removed;
     }
 
-    let stored_cache_size = {
+    if let Ok(actual_cache_size) = task_cache_scan(database).await {
+        let active_downloading_size = active_downloads.download_size();
+
         let mut mg_cache_size = RUNTIMEDETAILS
             .get()
             .expect("global set in main")
@@ -314,30 +316,31 @@ async fn task_cleanup_impl(
                     *mg_cache_size, bytes_removed
                 );
             }
-        }
+        };
 
-        *mg_cache_size
-    };
-
-    if let Ok(actual_cache_size) = task_cache_scan(database).await {
-        let active_downloading_size = active_downloads.download_size();
-        let matched = actual_cache_size + active_downloading_size == stored_cache_size;
+        let matched = actual_cache_size + active_downloading_size == *mg_cache_size;
 
         if matched {
             debug!(
                 "actual cache size: {}; stored cache size: {}; active download size: {}",
-                actual_cache_size, stored_cache_size, active_downloading_size,
+                actual_cache_size, *mg_cache_size, active_downloading_size,
             );
         } else {
             // TODO: check for inconsistencies and repair
+
+            let difference = (*mg_cache_size).abs_diff(actual_cache_size + active_downloading_size);
             warn!(
                 "actual cache size: {}; stored cache size: {}; active download size: {}; size difference: {}",
-                actual_cache_size,
-                stored_cache_size,
-                active_downloading_size,
-                stored_cache_size.abs_diff(actual_cache_size + active_downloading_size)
+                actual_cache_size, *mg_cache_size, active_downloading_size, difference,
             );
+
+            /* auto-repair small abnormalities */
+            if difference < 10 * 1024 {
+                *mg_cache_size = actual_cache_size + active_downloading_size;
+            }
         }
+
+        drop(mg_cache_size);
     }
 
     info!(
