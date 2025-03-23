@@ -459,6 +459,7 @@ struct DeliveryStreamBody<S> {
     transferred_bytes: u64,
     database: Option<Database>,
     conn_details: Option<ConnectionDetails>,
+    error: Option<String>,
 }
 
 impl<S> DeliveryStreamBody<S> {
@@ -478,11 +479,12 @@ impl<S> DeliveryStreamBody<S> {
             transferred_bytes: 0,
             database: Some(database),
             conn_details: Some(conn_details),
+            error: None,
         }
     }
 }
 
-impl<S, D, E> Body for DeliveryStreamBody<S>
+impl<S, D, E: ToString> Body for DeliveryStreamBody<S>
 where
     S: futures_util::Stream<Item = Result<Frame<D>, E>>,
     D: bytes::Buf,
@@ -496,10 +498,13 @@ where
     ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.as_mut().project().stream.poll_next(cx) {
             Ready(Some(result)) => {
-                if let Ok(ref frame) = result {
-                    if let Some(data) = frame.data_ref() {
-                        *self.project().transferred_bytes += data.remaining() as u64;
+                match &result {
+                    Ok(frame) => {
+                        if let Some(data) = frame.data_ref() {
+                            *self.project().transferred_bytes += data.remaining() as u64;
+                        }
                     }
+                    Err(err) => *self.project().error = Some(err.to_string()),
                 }
                 Ready(Some(result))
             }
@@ -526,6 +531,7 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
         let project = self.project();
         let db = project.database.take().expect("Option is set in new()");
         let cd = project.conn_details.take().expect("Option is set in new()");
+        let error = project.error.take();
         tokio::task::spawn(async move {
             let aliased = match cd.aliased_host {
                 Some(alias) => Cow::Owned(format!(" aliased to host {alias}")),
@@ -556,18 +562,19 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                 {
                     error!("Failed to register delivery:  {err}");
                 }
-            } else if transferred_bytes == 0 {
+            } else if transferred_bytes == 0 && duration < Duration::from_secs(1) {
                 info!(
-                    "Aborted serving cached file {} from mirror {}{} for client {} after {}",
+                    "Aborted serving cached file {} from mirror {}{} for client {} after {}:  {}",
                     cd.debname,
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(duration)
+                    HumanFmt::Time(duration),
+                    error.unwrap_or(String::from("unknown reason")),
                 );
             } else {
                 warn!(
-                    "Failed to serve cached file {} from mirror {}{} for client {} after {} (size={}, transferred={}, rate={})",
+                    "Failed to serve cached file {} from mirror {}{} for client {} after {} (size={}, transferred={}, rate={}):  {}",
                     cd.debname,
                     cd.mirror,
                     aliased,
@@ -575,7 +582,8 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     HumanFmt::Time(duration),
                     HumanFmt::Size(size),
                     HumanFmt::Size(transferred_bytes),
-                    HumanFmt::Rate(transferred_bytes, duration)
+                    HumanFmt::Rate(transferred_bytes, duration),
+                    error.unwrap_or(String::from("unknown reason")),
                 );
             }
         });
