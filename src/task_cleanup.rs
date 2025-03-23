@@ -318,29 +318,29 @@ async fn task_cleanup_impl(
             }
         };
 
-        let matched = actual_cache_size + active_downloading_size == *mg_cache_size;
+        let cache_size = *mg_cache_size;
+        let difference = cache_size.abs_diff(actual_cache_size + active_downloading_size);
 
-        if matched {
+        /* auto-repair small abnormalities */
+        if difference < 10 * 1024 {
+            *mg_cache_size = actual_cache_size + active_downloading_size;
+        }
+
+        drop(mg_cache_size);
+
+        if difference == 0 {
             debug!(
                 "actual cache size: {}; stored cache size: {}; active download size: {}",
-                actual_cache_size, *mg_cache_size, active_downloading_size,
+                actual_cache_size, cache_size, active_downloading_size,
             );
         } else {
             // TODO: check for inconsistencies and repair
 
-            let difference = (*mg_cache_size).abs_diff(actual_cache_size + active_downloading_size);
             warn!(
                 "actual cache size: {}; stored cache size: {}; active download size: {}; size difference: {}",
-                actual_cache_size, *mg_cache_size, active_downloading_size, difference,
+                actual_cache_size, cache_size, active_downloading_size, difference,
             );
-
-            /* auto-repair small abnormalities */
-            if difference < 10 * 1024 {
-                *mg_cache_size = actual_cache_size + active_downloading_size;
-            }
         }
-
-        drop(mg_cache_size);
     }
 
     info!(
