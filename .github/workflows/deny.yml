@@ -13,6 +13,9 @@ on:
 jobs:
   dependency_linting:
 
+    permissions:
+      contents: read
+
     runs-on: ubuntu-latest
 
     steps:
