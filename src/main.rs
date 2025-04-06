@@ -2204,7 +2204,7 @@ fn connect_response(
                             client.ip().to_canonical()
                         );
                     }
-                };
+                }
             }
             Err(err) => error!(
                 "Error upgrading connection for client {} to {host}:{port}:  {err}",

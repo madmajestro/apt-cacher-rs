@@ -170,10 +170,7 @@ async fn get_package_file(
                         MAX_TRIES
                     );
                     if tries >= MAX_TRIES {
-                        error!(
-                            "Failed to retrieve {uri_tmp} after {} retries:  {err}",
-                            MAX_TRIES
-                        );
+                        error!("Failed to retrieve {uri_tmp} after {MAX_TRIES} retries:  {err}");
                         return Err(GetPackageError::HyperUtil(err));
                     }
                     tries += 1;
@@ -247,7 +244,7 @@ async fn task_cleanup_impl(
             Ok(val) => {
                 if let Err(err) = database.delete_usage_logs(val).await {
                     error!("Failed to delete old usage logs:  {err}");
-                };
+                }
             }
             Err(err) => error!("Failed to compute date for usage data retention:  {err}"),
         }
@@ -316,7 +313,7 @@ async fn task_cleanup_impl(
                     *mg_cache_size, bytes_removed
                 );
             }
-        };
+        }
 
         let cache_size = *mg_cache_size;
         let difference = cache_size.abs_diff(actual_cache_size + active_downloading_size);
@@ -330,15 +327,13 @@ async fn task_cleanup_impl(
 
         if difference == 0 {
             debug!(
-                "actual cache size: {}; stored cache size: {}; active download size: {}",
-                actual_cache_size, cache_size, active_downloading_size,
+                "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}",
             );
         } else {
             // TODO: check for inconsistencies and repair
 
             warn!(
-                "actual cache size: {}; stored cache size: {}; active download size: {}; size difference: {}",
-                actual_cache_size, cache_size, active_downloading_size, difference,
+                "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}; size difference: {difference}",
             );
         }
     }
@@ -478,7 +473,7 @@ async fn cleanup_mirror(
             + pkgfmt.extension();
 
         let memfd = MemfdOptions::new().create(&name).map_err(|err| {
-            error!("Error creating in-memory file `{}`:  {err}", name);
+            error!("Error creating in-memory file `{name}`:  {err}");
             ProxyCacheError::Memfd(err)
         })?;
 
