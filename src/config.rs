@@ -51,6 +51,8 @@ pub(crate) const DEFAULT_LOGSTORE_CAPACITY: NonZeroUsize = nonzero!(100);
 pub(crate) const DEFAULT_MIN_DOWNLOAD_RATE: Option<NonZero<usize>> = Some(nonzero!(10000));
 pub(crate) const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_ENABLED: bool = false;
+pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MAXPARALLEL: Option<NonZero<usize>> =
+    Some(nonzero!(3));
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE: hyper::StatusCode =
     hyper::StatusCode::SERVICE_UNAVAILABLE;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER: NonZero<u16> = nonzero!(5);
@@ -292,6 +294,9 @@ pub(crate) struct Config {
     #[serde(default = "default_experimental_parallel_hack_enabled")]
     pub(crate) experimental_parallel_hack_enabled: bool,
 
+    #[serde(default = "default_experimental_parallel_hack_maxparallel")]
+    pub(crate) experimental_parallel_hack_maxparallel: Option<NonZero<usize>>,
+
     #[serde(
         default = "default_experimental_parallel_hack_statuscode",
         deserialize_with = "statuscode_from_u32"
@@ -531,6 +536,10 @@ const fn default_experimental_parallel_hack_enabled() -> bool {
     DEFAULT_EXPERIMENTAL_PARALLEL_HACK_ENABLED
 }
 
+const fn default_experimental_parallel_hack_maxparallel() -> Option<NonZero<usize>> {
+    DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MAXPARALLEL
+}
+
 const fn default_experimental_parallel_hack_statuscode() -> hyper::StatusCode {
     DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE
 }
@@ -653,6 +662,7 @@ impl Config {
             logstore_capacity: DEFAULT_LOGSTORE_CAPACITY,
             min_download_rate: DEFAULT_MIN_DOWNLOAD_RATE,
             experimental_parallel_hack_enabled: DEFAULT_EXPERIMENTAL_PARALLEL_HACK_ENABLED,
+            experimental_parallel_hack_maxparallel: DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MAXPARALLEL,
             experimental_parallel_hack_statuscode: DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE,
             experimental_parallel_hack_retryafter: DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER,
             experimental_parallel_hack_factor: DEFAULT_EXPERIMENTAL_PARALLEL_HACK_FACTOR,

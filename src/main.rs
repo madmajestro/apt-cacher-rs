@@ -1992,6 +1992,9 @@ async fn serve_new_file(
     if !is_volatile
         && gcfg.experimental_parallel_hack_enabled
         && gcfg
+            .experimental_parallel_hack_maxparallel
+            .is_none_or(|max_parallel| curr_downloads <= max_parallel.get())
+        && gcfg
             .experimental_parallel_hack_minsize
             .is_some_and(|size| content_length.upper() > size)
     {
