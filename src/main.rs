@@ -1996,7 +1996,7 @@ async fn serve_new_file(
             .is_none_or(|max_parallel| curr_downloads <= max_parallel.get())
         && gcfg
             .experimental_parallel_hack_minsize
-            .is_some_and(|size| content_length.upper() > size)
+            .is_none_or(|size| content_length.upper() > size)
     {
         #[expect(clippy::cast_precision_loss)]
         let p = (1.0
