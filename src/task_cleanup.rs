@@ -24,7 +24,7 @@ use crate::{
 };
 
 async fn body_to_file(body: &mut Incoming, file: tokio::fs::File) -> Result<(), ProxyCacheError> {
-    let mut writer = BufWriter::new(file);
+    let mut writer = BufWriter::with_capacity(global_config().buffer_size, file);
 
     while let Some(next) = body.frame().await {
         let frame = next?;
@@ -69,7 +69,8 @@ enum PackageFormat {
 }
 
 impl PackageFormat {
-    fn extension(&self) -> &'static str {
+    #[must_use]
+    const fn extension(&self) -> &'static str {
         match self {
             Self::Raw => "",
             Self::Gz => ".gz",
@@ -89,7 +90,9 @@ impl PackageFormat {
             err
         })?;
 
-        let file_reader = tokio::io::BufReader::new(file);
+        let buffer_size = global_config().buffer_size;
+
+        let file_reader = tokio::io::BufReader::with_capacity(buffer_size, file);
 
         macro_rules! process_lines {
             ($e: expr) => {
@@ -122,14 +125,14 @@ impl PackageFormat {
             Self::Gz => {
                 let decoder = async_compression::tokio::bufread::GzipDecoder::new(file_reader);
 
-                let reader = tokio::io::BufReader::new(decoder);
+                let reader = tokio::io::BufReader::with_capacity(buffer_size, decoder);
 
                 process_lines!(reader.lines());
             }
             Self::Xz => {
                 let decoder = async_compression::tokio::bufread::XzDecoder::new(file_reader);
 
-                let reader = tokio::io::BufReader::new(decoder);
+                let reader = tokio::io::BufReader::with_capacity(buffer_size, decoder);
 
                 process_lines!(reader.lines());
             }
