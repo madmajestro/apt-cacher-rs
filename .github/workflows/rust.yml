@@ -14,24 +14,18 @@ jobs:
     name: Rust Build
     runs-on: ubuntu-latest
 
+    env:
+      RUSTFLAGS: '-D warnings'
+      SQLX_OFFLINE: true
+
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: sudo apt-get install -y sqlite3
-
-    - name: Setup development database
-      run: sqlite3 apt-cacher-rs.db < db.sqlite
-
     - name: Build (default features)
       run: cargo build --verbose
-      env:
-          RUSTFLAGS: '-D warnings'
 
     - name: Build (tls_rustls feature)
       run: cargo build --verbose --features tls_rustls
-      env:
-          RUSTFLAGS: '-D warnings'
 
     - name: Format
       run: cargo fmt --all --check
