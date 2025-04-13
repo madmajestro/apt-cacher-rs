@@ -3053,6 +3053,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    if global_config().allowed_mirrors.is_empty() {
+        warn!("No mirror allowed, consider setting option 'allowed_mirrors'");
+    }
+
     info!(
         "Using cache directory `{}`",
         global_config().cache_directory.display()
