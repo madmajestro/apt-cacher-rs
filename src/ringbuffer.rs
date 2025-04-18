@@ -12,6 +12,7 @@ pub(crate) struct RingBuffer<T> {
 
 #[allow(unused)]
 impl<T> RingBuffer<T> {
+    #[must_use]
     pub(crate) fn new(capacity: NonZero<usize>) -> Self {
         Self {
             inner: VecDeque::with_capacity(capacity.get()),
@@ -20,7 +21,7 @@ impl<T> RingBuffer<T> {
     }
 
     pub(crate) fn push(&mut self, item: T) {
-        if self.inner.len() == self.capacity.get() {
+        if self.is_full() {
             self.inner.pop_front();
         }
 
@@ -64,6 +65,7 @@ impl<T> SumRingBuffer<T>
 where
     T: AddAssign + SubAssign + PartialEq + for<'a> std::iter::Sum<&'a T> + Copy + Default,
 {
+    #[must_use]
     pub(crate) fn new(capacity: NonZero<usize>) -> Self {
         Self {
             inner: VecDeque::with_capacity(capacity.get()),
@@ -73,7 +75,7 @@ where
     }
 
     pub(crate) fn push(&mut self, item: T) {
-        if self.inner.len() == self.capacity.get() {
+        if self.is_full() {
             let front = self.inner.pop_front().expect("VecDeque is full, not empty");
             self.sum -= front;
         }
@@ -86,12 +88,15 @@ where
     }
 
     pub(crate) fn add_back(&mut self, item: T) {
-        match self.inner.back_mut() {
-            Some(v) => {
-                *v += item;
-                self.sum += item;
-            }
-            None => self.push(item),
+        if let Some(v) = self.inner.back_mut() {
+            *v += item;
+            self.sum += item;
+        } else {
+            self.inner.push_back(item);
+
+            self.sum += item;
+
+            debug_assert!(self.inner.len() <= self.capacity.get());
         }
     }
 
