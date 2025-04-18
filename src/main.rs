@@ -18,7 +18,6 @@ mod task_setup;
 mod web_interface;
 
 use std::borrow::Borrow;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::hash::Hash;
@@ -534,8 +533,8 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
         let error = project.error.take();
         tokio::task::spawn(async move {
             let aliased = match cd.aliased_host {
-                Some(alias) => Cow::Owned(format!(" aliased to host {alias}")),
-                None => Cow::Borrowed(""),
+                Some(alias) => format!(" aliased to host {alias}"),
+                None => String::new(),
             };
             if transferred_bytes == size {
                 info!(
@@ -599,8 +598,8 @@ async fn serve_cached_file(
     file_path: &Path,
 ) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
     let aliased = match conn_details.aliased_host {
-        Some(alias) => Cow::Owned(format!(" aliased to host {alias}")),
-        None => Cow::Borrowed(""),
+        Some(alias) => format!(" aliased to host {alias}"),
+        None => String::new(),
     };
     info!(
         "Serving cached file {} from mirror {}{} for client {}...",
