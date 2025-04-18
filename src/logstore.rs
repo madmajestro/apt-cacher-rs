@@ -58,6 +58,7 @@ pub(crate) struct LogStore {
 }
 
 impl LogStore {
+    #[must_use]
     pub(crate) fn new(capacity: NonZeroUsize) -> LogStore {
         Self {
             inner: Arc::new(Mutex::new(LogStoreImpl::new(capacity))),
@@ -66,6 +67,7 @@ impl LogStore {
 }
 
 impl LogStore {
+    #[must_use]
     pub(crate) fn entries(&self) -> LogStoreEntryListGuard<'_> {
         let guard = self.inner.lock().expect("Other users should not panic");
         LogStoreEntryListGuard { guard }
@@ -88,6 +90,7 @@ pub(crate) struct LogStoreEntryListGuard<'a> {
 }
 
 impl LogStoreEntryListGuard<'_> {
+    #[must_use]
     pub(crate) fn iter(&self) -> std::collections::vec_deque::Iter<'_, std::string::String> {
         self.guard.iter()
     }
