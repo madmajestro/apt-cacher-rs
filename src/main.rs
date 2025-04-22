@@ -284,6 +284,7 @@ impl Body for ChannelBody {
     type Error = ProxyCacheError;
 
     fn size_hint(&self) -> hyper::body::SizeHint {
+        // TODO: derive Copy for hyper::body::SizeHint
         self.remaining.clone()
     }
 
