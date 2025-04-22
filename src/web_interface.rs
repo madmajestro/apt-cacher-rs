@@ -6,7 +6,6 @@ use build_html::Html;
 use build_html::HtmlContainer;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
-use http_body_util::combinators::BoxBody;
 use hyper::{
     Request, Response, StatusCode,
     header::{HeaderValue, SERVER},
@@ -18,6 +17,7 @@ use time::macros::format_description;
 
 use crate::APP_VERSION;
 use crate::HumanFmt;
+use crate::ProxyCacheBody;
 use crate::RUNTIMEDETAILS;
 use crate::global_config;
 use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full, quick_response};
@@ -28,7 +28,7 @@ const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
 pub(crate) async fn serve_web_interface(
     req: Request<hyper::body::Incoming>,
     database: Database,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let location = req.uri().path();
     debug!("Requested local web interface resource `{location}`");
 
@@ -230,7 +230,7 @@ async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheErro
     Ok(html_table_clients)
 }
 
-async fn serve_root(database: Database) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
     let start = Instant::now();
 
     let Ok(html_table_mirrors) = build_mirror_table(&database).await else {
@@ -309,7 +309,7 @@ async fn serve_root(database: Database) -> Response<BoxBody<bytes::Bytes, ProxyC
         )
         .to_html_string();
 
-    let boxed_body = full(html);
+    let boxed_body = ProxyCacheBody::Boxed(full(html));
 
     let response = Response::builder()
         .status(StatusCode::OK)
@@ -322,7 +322,7 @@ async fn serve_root(database: Database) -> Response<BoxBody<bytes::Bytes, ProxyC
     response
 }
 
-fn serve_logs() -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+fn serve_logs() -> Response<ProxyCacheBody> {
     let mut buf = Vec::with_capacity(8192);
 
     let ls = LOGSTORE.get().expect("Should be set");
@@ -331,7 +331,7 @@ fn serve_logs() -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
         buf.push(b'\n');
     }
 
-    let boxed_body = full(buf);
+    let boxed_body = ProxyCacheBody::Boxed(full(buf));
 
     let response = Response::builder()
         .status(StatusCode::OK)

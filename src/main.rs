@@ -23,9 +23,12 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::error::Error;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
+#[cfg(feature = "mmap")]
+use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZero;
 use std::num::NonZeroU16;
@@ -33,10 +36,13 @@ use std::num::NonZeroU64;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::task::Poll::{Pending, Ready};
+#[cfg(not(feature = "mmap"))]
+use std::task::Poll::Pending;
+use std::task::Poll::Ready;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -44,8 +50,10 @@ use std::time::SystemTime;
 use channel_body::ChannelBody;
 use channel_body::ChannelBodyError;
 use clap::Parser;
+#[cfg(not(feature = "mmap"))]
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
+use http_range::http_parse_range;
 use hyper::body::Frame;
 use hyper::body::Incoming;
 use hyper::body::SizeHint;
@@ -79,7 +87,11 @@ use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
 use log::{LevelFilter, debug, error, info, trace, warn};
-use pin_project::{pin_project, pinned_drop};
+#[cfg(feature = "mmap")]
+use memmap2::{Advice, Mmap, MmapOptions};
+use pin_project::pin_project;
+#[cfg(not(feature = "mmap"))]
+use pin_project::pinned_drop;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::distr::Alphanumeric;
@@ -93,6 +105,7 @@ use simplelog::ConfigBuilder;
 use simplelog::WriteLogger;
 use simplelog::{ColorChoice, TermLogger, TerminalMode};
 use tokio::io::AsyncReadExt;
+#[cfg(not(feature = "mmap"))]
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -114,7 +127,6 @@ use crate::deb_mirror::valid_filename;
 use crate::deb_mirror::valid_mirrorname;
 use crate::error::ProxyCacheError;
 use crate::http_range::http_datetime_to_systemtime;
-use crate::http_range::http_parse_range;
 use crate::http_range::systemtime_to_http_datetime;
 use crate::humanfmt::HumanFmt;
 use crate::logstore::LogStore;
@@ -232,16 +244,18 @@ pub(crate) async fn request_with_retry(
 fn quick_response<T: Into<bytes::Bytes>>(
     status: hyper::StatusCode,
     message: T,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     Response::builder()
         .status(status)
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .body(full(message))
+        .body(ProxyCacheBody::Boxed(full(message)))
         .expect("Response is valid")
 }
 
+#[cfg(not(feature = "mmap"))]
 /* Adopted from http_body_util::StreamBody */
 #[pin_project(PinnedDrop)]
+#[derive(Debug)]
 struct DeliveryStreamBody<S> {
     #[pin]
     stream: S,
@@ -254,6 +268,7 @@ struct DeliveryStreamBody<S> {
     error: Option<String>,
 }
 
+#[cfg(not(feature = "mmap"))]
 impl<S> DeliveryStreamBody<S> {
     #[must_use]
     fn new(
@@ -276,6 +291,7 @@ impl<S> DeliveryStreamBody<S> {
     }
 }
 
+#[cfg(not(feature = "mmap"))]
 impl<S, D, E: ToString> Body for DeliveryStreamBody<S>
 where
     S: futures_util::Stream<Item = Result<Frame<D>, E>>,
@@ -313,6 +329,7 @@ where
     }
 }
 
+#[cfg(not(feature = "mmap"))]
 #[pinned_drop]
 impl<S> PinnedDrop for DeliveryStreamBody<S> {
     fn drop(self: std::pin::Pin<&mut Self>) {
@@ -382,14 +399,248 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
     }
 }
 
+#[derive(Debug)]
+#[pin_project(project = EnumProj)]
+enum ProxyCacheBody {
+    #[cfg(feature = "mmap")]
+    Mmap(#[pin] MmapBody),
+    #[cfg(feature = "mmap")]
+    MmapRateChecked(#[pin] RateCheckedBody<MmapData>, IpAddr),
+    Boxed(#[pin] BoxBody<bytes::Bytes, ProxyCacheError>),
+}
+
+impl Body for ProxyCacheBody {
+    type Data = ProxyCacheBodyData;
+
+    type Error = ProxyCacheError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.project() {
+            #[cfg(feature = "mmap")]
+            EnumProj::Mmap(memory_map) => memory_map
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Mmap))
+                .map_err(|never| match never {}),
+            #[cfg(feature = "mmap")]
+            EnumProj::MmapRateChecked(mut memory_map, client_ip) => memory_map
+                .as_mut()
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Mmap))
+                .map_err(|rerr| match rerr {
+                    RateCheckedBodyErr::DownloadRate((total_size, timeout_secs)) => {
+                        ProxyCacheError::ClientDownloadRate(error::ClientDownloadRate {
+                            total_size,
+                            timeout_secs,
+                            client_ip: *client_ip,
+                        })
+                    }
+                    RateCheckedBodyErr::Hyper(herr) => ProxyCacheError::Hyper(herr),
+                    RateCheckedBodyErr::ProxyCache(perr) => perr,
+                }),
+            EnumProj::Boxed(bytes) => bytes
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Bytes)),
+        }
+    }
+}
+
+enum ProxyCacheBodyData {
+    #[cfg(feature = "mmap")]
+    Mmap(MmapData),
+    Bytes(bytes::Bytes),
+}
+
+impl bytes::buf::Buf for ProxyCacheBodyData {
+    fn remaining(&self) -> usize {
+        match self {
+            #[cfg(feature = "mmap")]
+            Self::Mmap(memory_map) => memory_map.remaining(),
+            Self::Bytes(bytes) => bytes.remaining(),
+        }
+    }
+
+    fn chunk(&self) -> &[u8] {
+        match self {
+            #[cfg(feature = "mmap")]
+            Self::Mmap(memory_map) => memory_map.chunk(),
+            Self::Bytes(bytes) => bytes.chunk(),
+        }
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        match self {
+            #[cfg(feature = "mmap")]
+            Self::Mmap(memory_map) => memory_map.advance(cnt),
+            Self::Bytes(bytes) => bytes.advance(cnt),
+        }
+    }
+}
+
+#[cfg(feature = "mmap")]
+#[derive(Debug)]
+struct MmapBody {
+    mapping: Arc<Mmap>,
+    position: usize,
+    length: usize,
+    partial: bool,
+    start: Instant,
+    database: Option<Database>,
+    conn_details: Option<ConnectionDetails>,
+}
+
+#[cfg(feature = "mmap")]
+impl MmapBody {
+    #[must_use]
+    fn new(
+        mapping: Mmap,
+        length: usize,
+        partial: bool,
+        database: Database,
+        conn_details: ConnectionDetails,
+    ) -> Self {
+        Self {
+            mapping: Arc::new(mapping),
+            position: 0,
+            length,
+            partial,
+            start: Instant::now(),
+            database: Some(database),
+            conn_details: Some(conn_details),
+        }
+    }
+}
+
+#[cfg(feature = "mmap")]
+impl Drop for MmapBody {
+    fn drop(&mut self) {
+        let size = self.length as u64;
+        let partial = self.partial;
+        let duration = self.start.elapsed();
+        let transferred_bytes = self.position as u64;
+        let db = self.database.take().expect("set in new()");
+        let cd = self.conn_details.take().expect("set in new()");
+        tokio::task::spawn(async move {
+            let aliased = match cd.aliased_host {
+                Some(alias) => format!(" aliased to host {alias}"),
+                None => String::new(),
+            };
+            if transferred_bytes == size {
+                info!(
+                    "Served cached file {} from mirror {}{} for client {} in {} (size={}, rate={})",
+                    cd.debname,
+                    cd.mirror,
+                    aliased,
+                    cd.client.ip().to_canonical(),
+                    HumanFmt::Time(duration),
+                    HumanFmt::Size(size),
+                    HumanFmt::Rate(size, duration)
+                );
+
+                if let Err(err) = db
+                    .register_deliviery(
+                        &cd.mirror,
+                        &cd.debname,
+                        size,
+                        duration,
+                        partial,
+                        cd.client.ip().to_canonical(),
+                    )
+                    .await
+                {
+                    error!("Failed to register delivery:  {err}");
+                }
+            } else if transferred_bytes == 0 && duration < Duration::from_secs(1) {
+                info!(
+                    "Aborted serving cached file {} from mirror {}{} for client {} after {}",
+                    cd.debname,
+                    cd.mirror,
+                    aliased,
+                    cd.client.ip().to_canonical(),
+                    HumanFmt::Time(duration),
+                );
+            } else {
+                warn!(
+                    "Failed to serve cached file {} from mirror {}{} for client {} after {} (size={}, transferred={}, rate={})",
+                    cd.debname,
+                    cd.mirror,
+                    aliased,
+                    cd.client.ip().to_canonical(),
+                    HumanFmt::Time(duration),
+                    HumanFmt::Size(size),
+                    HumanFmt::Size(transferred_bytes),
+                    HumanFmt::Rate(transferred_bytes, duration),
+                );
+            }
+        });
+    }
+}
+
+#[cfg(feature = "mmap")]
+#[derive(Debug)]
+struct MmapData {
+    mapping: Arc<Mmap>,
+    position: usize,
+    remaining: usize,
+}
+
+#[cfg(feature = "mmap")]
+impl bytes::buf::Buf for MmapData {
+    fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    fn chunk(&self) -> &[u8] {
+        &self.mapping[self.position..(self.position + self.remaining)]
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        assert!(cnt <= self.remaining);
+        self.position += cnt;
+        self.remaining -= cnt;
+    }
+}
+
+#[cfg(feature = "mmap")]
+impl Body for MmapBody {
+    type Data = MmapData;
+    type Error = Infallible;
+
+    fn is_end_stream(&self) -> bool {
+        assert!(self.position <= self.length);
+        self.position == self.length
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        assert!(self.position <= self.length);
+        SizeHint::with_exact((self.length - self.position) as u64)
+    }
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // TODO: split frames?
+        let frame = Frame::data(MmapData {
+            mapping: self.mapping.clone(),
+            position: self.position,
+            remaining: self.length,
+        });
+        self.as_mut().position = self.length;
+        Ready(Some(Ok(frame)))
+    }
+}
+
 #[must_use]
 async fn serve_cached_file(
     conn_details: ConnectionDetails,
     req: Request<hyper::body::Incoming>,
     database: Database,
-    mut file: tokio::fs::File,
+    file: tokio::fs::File,
     file_path: &Path,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let aliased = match conn_details.aliased_host {
         Some(alias) => format!(" aliased to host {alias}"),
         None => String::new(),
@@ -418,31 +669,177 @@ async fn serve_cached_file(
         .modified()
         .expect("platform should support modification time");
 
-    let (http_status, content_length, content_range, partial) = match http_parse_range(
-        req.headers().get(RANGE).and_then(|val| val.to_str().ok()),
-        req.headers()
-            .get(IF_RANGE)
-            .and_then(|val| val.to_str().ok()),
-        file_size,
-        modification_date,
-    ) {
-        Some((content_range, start, content_length)) => {
-            if let Err(err) = file.seek(std::io::SeekFrom::Start(start)).await {
-                error!(
-                    "Error seeking cached file {} to {start}/{file_size}:  {err}",
-                    file_path.display()
-                );
-                return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
-            }
-            (
+    let (http_status, content_start, content_length, content_range, partial) =
+        match http_parse_range(
+            req.headers().get(RANGE).and_then(|val| val.to_str().ok()),
+            req.headers()
+                .get(IF_RANGE)
+                .and_then(|val| val.to_str().ok()),
+            file_size,
+            modification_date,
+        ) {
+            Some((content_range, start, content_length)) => (
                 StatusCode::PARTIAL_CONTENT,
+                start,
                 content_length,
                 Some(content_range),
                 true,
-            )
+            ),
+            None => (StatusCode::OK, 0, file_size, None, false),
+        };
+
+    #[cfg(feature = "mmap")]
+    let content_length: usize = match content_length.try_into() {
+        Ok(c) => c,
+        Err(_err) => {
+            error!(
+                "Content length of {} for file {} from mirror {}{} for client {} is too large",
+                content_length,
+                file_path.display(),
+                conn_details.mirror,
+                aliased,
+                conn_details.client.ip().to_canonical()
+            );
+            return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
         }
-        None => (StatusCode::OK, file_size, None, false),
     };
+
+    #[cfg(feature = "mmap")]
+    let response = serve_cached_file_mmap(
+        conn_details,
+        database,
+        file,
+        file_path,
+        modification_date,
+        http_status,
+        content_length,
+        content_start,
+        content_range,
+        partial,
+    )
+    .await;
+    #[cfg(not(feature = "mmap"))]
+    let response = serve_cached_file_buf(
+        conn_details,
+        database,
+        file,
+        file_path,
+        file_size,
+        modification_date,
+        http_status,
+        content_length,
+        content_start,
+        content_range,
+        partial,
+    )
+    .await;
+
+    response
+}
+
+#[cfg(feature = "mmap")]
+#[expect(clippy::too_many_arguments)]
+async fn serve_cached_file_mmap(
+    conn_details: ConnectionDetails,
+    database: Database,
+    file: tokio::fs::File,
+    file_path: &Path,
+    modification_date: SystemTime,
+    http_status: StatusCode,
+    content_length: usize,
+    content_start: u64,
+    content_range: Option<String>,
+    partial: bool,
+) -> Response<ProxyCacheBody> {
+    let file_pathbuf = file_path.to_path_buf();
+    let client_ip = conn_details.client.ip();
+    let thread_result = tokio::task::spawn_blocking(move || {
+        trace!(
+            "Using mmap(2) with start={content_start} and length={content_length} from content_range={content_range:?} for file {}",
+            file_pathbuf.display()
+        );
+        // SAFETY:
+        // The file is only read from and only forwarded as bytes to a network socket.
+        let memory_map = match unsafe {
+            MmapOptions::new()
+                .offset(content_start)
+                .len(content_length)
+                .map(&file)
+        } {
+            Ok(f) => f,
+            Err(err) => {
+                error!(
+                    "Failed to mmap downloaded file {}:  {err}",
+                    file_pathbuf.display()
+                );
+                return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
+            }
+        };
+
+        debug_assert_eq!(memory_map.len(), content_length);
+
+        /* close file, since mapping is independent */
+        drop(file);
+
+        if let Err(err) = memory_map.advise(Advice::Sequential) {
+            warn_once_or_info!(
+                "Failed to advice memory mapping of file {}:  {err}",
+                file_pathbuf.display()
+            );
+        }
+
+        let memory_body =
+            MmapBody::new(memory_map, content_length, partial, database, conn_details);
+
+        let body = match global_config().min_download_rate {
+            Some(rate) => ProxyCacheBody::MmapRateChecked(
+                RateCheckedBody::new(memory_body.map_err(|never| match never {}), rate),
+                client_ip,
+            ),
+            None => ProxyCacheBody::Mmap(memory_body),
+        };
+
+        serve_cached_file_response(
+            http_status,
+            modification_date,
+            content_length as u64,
+            body,
+            content_range,
+        )
+    })
+    .await;
+
+    match thread_result {
+        Ok(resp) => resp,
+        Err(err) => {
+            error!("Failed to join blocking thread:  {err}");
+            quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure")
+        }
+    }
+}
+
+#[cfg(not(feature = "mmap"))]
+#[expect(clippy::too_many_arguments)]
+async fn serve_cached_file_buf(
+    conn_details: ConnectionDetails,
+    database: Database,
+    mut file: tokio::fs::File,
+    file_path: &Path,
+    file_size: u64,
+    modification_date: SystemTime,
+    http_status: StatusCode,
+    content_length: u64,
+    start: u64,
+    content_range: Option<String>,
+    partial: bool,
+) -> Response<ProxyCacheBody> {
+    if let Err(err) = file.seek(std::io::SeekFrom::Start(start)).await {
+        error!(
+            "Error seeking cached file {} to {start}/{file_size}:  {err}",
+            file_path.display()
+        );
+        return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
+    }
 
     let reader_stream =
         tokio_util::io::ReaderStream::with_capacity(file, global_config().buffer_size);
@@ -453,8 +850,24 @@ async fn serve_cached_file(
         database,
         conn_details,
     );
-    let boxed_body = delivery_body.map_err(ProxyCacheError::Io).boxed();
+    let body = ProxyCacheBody::Boxed(delivery_body.map_err(ProxyCacheError::Io).boxed());
 
+    serve_cached_file_response(
+        http_status,
+        modification_date,
+        content_length,
+        body,
+        content_range,
+    )
+}
+
+fn serve_cached_file_response(
+    http_status: StatusCode,
+    modification_date: SystemTime,
+    content_length: u64,
+    body: ProxyCacheBody,
+    content_range: Option<String>,
+) -> Response<ProxyCacheBody> {
     /*
      * Original headers:
      *
@@ -495,7 +908,7 @@ async fn serve_cached_file(
         )
         .header(ACCEPT_RANGES, HeaderValue::from_static("bytes"))
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .body(boxed_body)
+        .body(body)
         .expect("HTTP response is valid");
 
     if let Some(ct) = content_range {
@@ -524,7 +937,7 @@ async fn serve_volatile_file(
     file: tokio::fs::File,
     file_path: &Path,
     state: State,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let (is_downloading, status) = state
         .active_downloads
         .insert(conn_details.mirror.clone(), conn_details.debname.clone());
@@ -983,7 +1396,7 @@ async fn serve_unfinished_file(
     status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
     content_length: ContentLength,
     mut receiver: tokio::sync::watch::Receiver<u32>,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let md = match file.metadata().await {
         Ok(data) => data,
         Err(err) => {
@@ -1164,8 +1577,8 @@ async fn serve_unfinished_file(
                 min_download_rate,
             );
             response_builder
-                .body(BoxBody::new(checked_channel_body.map_err(
-                    move |rerr| match rerr {
+                .body(ProxyCacheBody::Boxed(BoxBody::new(
+                    checked_channel_body.map_err(move |rerr| match rerr {
                         RateCheckedBodyErr::DownloadRate((total_size, timeout_secs)) => {
                             ProxyCacheError::ClientDownloadRate(error::ClientDownloadRate {
                                 total_size,
@@ -1175,12 +1588,12 @@ async fn serve_unfinished_file(
                         }
                         RateCheckedBodyErr::Hyper(herr) => ProxyCacheError::Hyper(herr),
                         RateCheckedBodyErr::ProxyCache(perr) => perr,
-                    },
+                    }),
                 )))
                 .expect("HTTP response is valid")
         }
         None => response_builder
-            .body(BoxBody::new(channel_body))
+            .body(ProxyCacheBody::Boxed(BoxBody::new(channel_body)))
             .expect("HTTP response is valid"),
     };
 
@@ -1195,7 +1608,7 @@ async fn serve_downloading_file(
     req: Request<hyper::body::Incoming>,
     database: Database,
     status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let mut slept_once = false;
     let mut not_found_once = false;
 
@@ -1240,6 +1653,7 @@ async fn serve_downloading_file(
                 return serve_cached_file(conn_details, req, database, file, &path_clone).await;
             }
             ActiveDownloadStatus::Download(path, content_length, receiver) => {
+                /* Cannot use mmap(2) since the file is not yet completely written */
                 let file = match tokio::fs::File::open(&path).await {
                     Ok(f) => f,
                     Err(err) if err.kind() == tokio::io::ErrorKind::NotFound => {
@@ -1323,7 +1737,7 @@ async fn serve_new_file(
     req: Request<hyper::body::Incoming>,
     cfstate: CacheFileStat<'_>,
     state: State,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     // TODO: upstream constant
     const PROXY_CONNECT: HeaderName = HeaderName::from_static("proxy-connext");
 
@@ -1598,7 +2012,7 @@ async fn serve_new_file(
                             ))
                             .expect("string is valid"),
                         ) // TODO: send AGE in other branches as well
-                        .body(empty())
+                        .body(ProxyCacheBody::Boxed(empty()))
                         .expect("HTTP response is valid");
 
                     if let Some(date) = fwd_response.headers_mut().remove(DATE) {
@@ -1640,7 +2054,7 @@ async fn serve_new_file(
 
         let (parts, body) = fwd_response.into_parts();
 
-        let body = BoxBody::new(body.map_err(ProxyCacheError::Hyper));
+        let body = ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
 
         let response = Response::from_parts(parts, body);
 
@@ -1820,7 +2234,7 @@ async fn serve_new_file(
                     HeaderValue::from_str(&gcfg.experimental_parallel_hack_retryafter.to_string())
                         .expect("string is valid"),
                 )
-                .body(full("Parallel Download Hack"))
+                .body(ProxyCacheBody::Boxed(full("Parallel Download Hack")))
                 .expect("Response is valid");
         }
     }
@@ -1865,7 +2279,7 @@ async fn process_cache_request(
     req: Request<hyper::body::Incoming>,
     volatile: bool,
     state: State,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let cache_path: PathBuf = [
         &global_config().cache_directory,
         Path::new(
@@ -1919,7 +2333,7 @@ async fn process_cache_request(
 fn connect_response(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     let cfg = global_config();
 
     if !cfg.https_tunnel_enabled {
@@ -2011,14 +2425,14 @@ fn connect_response(
         }
     });
 
-    Response::new(empty())
+    Response::new(ProxyCacheBody::Boxed(empty()))
 }
 
 async fn pre_process_client_request_wrapper(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
     state: State,
-) -> Result<Response<BoxBody<bytes::Bytes, ProxyCacheError>>, Infallible> {
+) -> Result<Response<ProxyCacheBody>, Infallible> {
     Ok(pre_process_client_request(client, req, state).await)
 }
 
@@ -2028,7 +2442,7 @@ async fn pre_process_client_request(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
     state: State,
-) -> Response<BoxBody<bytes::Bytes, ProxyCacheError>> {
+) -> Response<ProxyCacheBody> {
     trace!("Incoming request: {req:?}");
 
     {
@@ -2418,7 +2832,9 @@ async fn pre_process_client_request(
 
                         let (parts, body) = redirected_response.into_parts();
 
-                        let body = BoxBody::new(body.map_err(ProxyCacheError::Hyper));
+                        let body = ProxyCacheBody::Boxed(BoxBody::new(
+                            body.map_err(ProxyCacheError::Hyper),
+                        ));
 
                         let response = Response::from_parts(parts, body);
 
@@ -2431,7 +2847,7 @@ async fn pre_process_client_request(
 
             let (parts, body) = fwd_response.into_parts();
 
-            let body = BoxBody::new(body.map_err(ProxyCacheError::Hyper));
+            let body = ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
 
             let response = Response::from_parts(parts, body);
 

@@ -4,11 +4,6 @@
   Requires either a hyper overhaul, since the behavior of sendfile(2) does not
   work with the trait Body used everywhere, or writing the HTTP server by hand.
 
-* Use mmap(2) to read from files.
-  Requires usage of unsafe code (memmap2::Mmap::mmap()) and a rework of the
-  current body type, since we would not return bytes::Bytes but borrowd slices
-  of u8.
-
 * ipnet parser updates:
   - https://github.com/krisprice/ipnet/issues/32
   - https://github.com/rust-lang/rust/pull/83652/files

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     num::NonZero,
     pin::Pin,
     time::{Duration, Instant},
@@ -9,6 +10,7 @@ use log::warn;
 
 use crate::{ProxyCacheError, nonzero, ringbuffer::SumRingBuffer};
 
+#[derive(Debug)]
 struct RateChecker {
     buf: SumRingBuffer<usize>,
     last: std::time::Instant,
@@ -67,15 +69,23 @@ pub(crate) enum RateCheckedBodyErr {
     ProxyCache(ProxyCacheError),
 }
 
+pub(crate) trait DebugBody: Body + Debug {}
+
+impl<B: Body + Debug, E, F: FnMut(<B as hyper::body::Body>::Error) -> E> DebugBody
+    for http_body_util::combinators::MapErr<B, F>
+{
+}
+
+#[derive(Debug)]
 pub(crate) struct RateCheckedBody<D> {
-    inner: Pin<Box<dyn Body<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static>>,
+    inner: Pin<Box<dyn DebugBody<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static>>,
     rchecker: RateChecker,
 }
 
 impl<D: bytes::Buf> RateCheckedBody<D> {
     pub(crate) fn new<B>(body: B, min_download_rate: NonZero<usize>) -> Self
     where
-        B: Body<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static,
+        B: DebugBody<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static,
         D: bytes::Buf,
     {
         Self {
