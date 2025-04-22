@@ -1633,9 +1633,9 @@ async fn serve_new_file(
      * }
      */
 
-    let fwd_host = match &req.headers().get(HOST) {
-        Some(h) => (*h).clone(),
-        None => HeaderValue::from_str(&conn_details.mirror.host)
+    let fwd_host = match req.headers().get(HOST) {
+        Some(h) => h,
+        None => &HeaderValue::from_str(&conn_details.mirror.host)
             .expect("connection host should be valid"),
     };
 
@@ -1643,7 +1643,7 @@ async fn serve_new_file(
         .method(Method::GET)
         .uri(req.uri())
         .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
-        .header(HOST, fwd_host.clone())
+        .header(HOST, fwd_host)
         .body(empty())
         .expect("request should be valid");
 
@@ -1695,7 +1695,7 @@ async fn serve_new_file(
                     .method(Method::GET)
                     .uri(moved_uri)
                     .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
-                    .header(HOST, fwd_host.clone())
+                    .header(HOST, fwd_host)
                     .body(empty())
                     .expect("request should be valid");
 
