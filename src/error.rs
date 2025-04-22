@@ -31,8 +31,6 @@ pub(crate) enum ProxyCacheError {
     MirrorDownloadRate(MirrorDownloadRate),
     Memfd(memfd::Error),
     ContentTooLarge(ContentLength, u64),
-    #[expect(dead_code)]
-    Generic(String),
 }
 
 impl std::fmt::Display for ProxyCacheError {
@@ -89,7 +87,6 @@ impl std::fmt::Display for ProxyCacheError {
                     orig,
                 )
             }
-            Self::Generic(msg) => msg.fmt(f),
         }
     }
 }
