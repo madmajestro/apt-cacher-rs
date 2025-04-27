@@ -1796,9 +1796,6 @@ async fn serve_new_file(
             .max(0.0);
         let d = Bernoulli::new(p).expect("p is valid");
         let v = d.sample(&mut rand::rng());
-        debug!(
-            "{v} is from a Bernoulli distribution with success probability {p} from count {curr_downloads}"
-        );
 
         if v {
             debug!(
