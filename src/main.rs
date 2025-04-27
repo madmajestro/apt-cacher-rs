@@ -21,6 +21,7 @@ mod web_interface;
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::error::Error;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -2014,7 +2015,7 @@ async fn pre_process_client_request_wrapper(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
     state: State,
-) -> Result<Response<BoxBody<bytes::Bytes, ProxyCacheError>>, ProxyCacheError> {
+) -> Result<Response<BoxBody<bytes::Bytes, ProxyCacheError>>, Infallible> {
     Ok(pre_process_client_request(client, req, state).await)
 }
 
