@@ -1,7 +1,7 @@
 use std::{net::IpAddr, num::NonZero, time::Duration};
 
-use crate::ContentLength;
-use crate::{ChannelBodyError, deb_mirror::Mirror, humanfmt::HumanFmt};
+use crate::{ChannelBodyError, ContentLength};
+use crate::{deb_mirror::Mirror, humanfmt::HumanFmt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientDownloadRate {

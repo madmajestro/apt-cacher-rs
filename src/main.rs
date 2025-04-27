@@ -3,6 +3,7 @@
     allow(clippy::map_unwrap_or, clippy::unwrap_used, clippy::too_many_lines)
 )]
 
+mod channel_body;
 mod config;
 mod database;
 mod deb_mirror;
@@ -39,6 +40,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use channel_body::ChannelBody;
+use channel_body::ChannelBodyError;
 use clap::Parser;
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
@@ -131,109 +134,6 @@ const APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PK
 const RETENTION_TIME: Duration = Duration::from_secs(8 * 7 * 24 * 60 * 60); /* 8 weeks */
 
 const VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER: NonZeroU64 = nonzero!(1024 * 1024); /* 1MB */
-
-enum ChannelBodyError {
-    ClientDownloadRate(error::ClientDownloadRate),
-    MirrorDownloadRate(error::MirrorDownloadRate),
-}
-
-struct ChannelBody {
-    receiver: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, ChannelBodyError>>,
-    content_length: ContentLength,
-    remaining: SizeHint,
-    received: u64,
-    complete: bool,
-}
-
-impl ChannelBody {
-    #[must_use]
-    fn new(
-        receiver: tokio::sync::mpsc::Receiver<Result<bytes::Bytes, ChannelBodyError>>,
-        content_length: ContentLength,
-    ) -> Self {
-        let remaining = match content_length {
-            ContentLength::Exact(size) => SizeHint::with_exact(size.get()),
-            ContentLength::Unknown(size) => {
-                let mut sz = SizeHint::new();
-                sz.set_upper(size.get());
-                sz
-            }
-        };
-
-        Self {
-            receiver,
-            content_length,
-            remaining,
-            received: 0,
-            complete: false,
-        }
-    }
-}
-
-impl Body for ChannelBody {
-    type Data = bytes::Bytes;
-    type Error = ProxyCacheError;
-
-    fn size_hint(&self) -> hyper::body::SizeHint {
-        // TODO: derive Copy for hyper::body::SizeHint
-        self.remaining.clone()
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.complete
-    }
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if self.is_end_stream() {
-            return std::task::Poll::Ready(None);
-        }
-
-        let msg = self.receiver.poll_recv(cx);
-        if matches!(msg, Ready(None)) {
-            self.complete = true;
-        }
-
-        msg.map(|d| {
-            d.map(|b| match b {
-                Ok(data) => {
-                    let datalen = data.len() as u64;
-
-                    match (self.remaining.exact(), self.remaining.upper()) {
-                        (Some(size), _) => match size.overflowing_sub(datalen) {
-                            (_, true) => Err(ProxyCacheError::ContentTooLarge(
-                                self.content_length,
-                                self.received + datalen,
-                            )),
-                            (val, false) => {
-                                self.received += datalen;
-                                self.remaining.set_exact(val);
-                                Ok(Frame::data(data))
-                            }
-                        },
-                        (None, Some(size)) => match size.overflowing_sub(datalen) {
-                            (_, true) => Err(ProxyCacheError::ContentTooLarge(
-                                self.content_length,
-                                self.received + datalen,
-                            )),
-                            (val, false) => {
-                                self.received += datalen;
-                                self.remaining.set_upper(val);
-                                Ok(Frame::data(data))
-                            }
-                        },
-                        (None, None) => {
-                            unreachable!("size hint is either exact or has an upper limit");
-                        }
-                    }
-                }
-                Err(err) => Err(err.into()),
-            })
-        })
-    }
-}
 
 async fn tokio_mkstemp(
     path: &Path,
