@@ -25,7 +25,7 @@ jobs:
       run: cargo build --verbose
 
     - name: Build (tls_rustls feature)
-      run: cargo build --verbose --features tls_rustls
+      run: cargo build --verbose --features tls_rustls,mmap
 
     - name: Format
       run: cargo fmt --all --check
