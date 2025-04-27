@@ -1766,16 +1766,22 @@ async fn serve_new_file(
             tx,
         )
         .await;
-        if !matches!(*(st.lock().await), ActiveDownloadStatus::Finished(_)) {
-            let mut mg_cache_size = RUNTIMEDETAILS
-                .get()
-                .expect("global is set in main()")
-                .cache_size
-                .lock()
-                .expect("other uses should not panic");
 
-            *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
+        {
+            let ads = st.lock().await;
+            assert!(!matches!(*ads, ActiveDownloadStatus::Init));
+            if !matches!(*(ads), ActiveDownloadStatus::Finished(_)) {
+                let mut mg_cache_size = RUNTIMEDETAILS
+                    .get()
+                    .expect("global is set in main()")
+                    .cache_size
+                    .lock()
+                    .expect("other uses should not panic");
+
+                *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
+            }
         }
+
         state.active_downloads.remove(&cd.mirror, &cd.debname);
     });
 
