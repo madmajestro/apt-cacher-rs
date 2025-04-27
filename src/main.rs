@@ -3152,8 +3152,48 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
+fn get_long_version() -> &'static str {
+    #[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
+    macro_rules! feature_tls {
+        () => {
+            "default"
+        };
+    }
+
+    #[cfg(feature = "tls_rustls")]
+    macro_rules! feature_tls {
+        () => {
+            "rustls"
+        };
+    }
+
+    #[cfg(feature = "mmap")]
+    macro_rules! feature_mmap {
+        () => {
+            "true"
+        };
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    macro_rules! feature_mmap {
+        () => {
+            "false"
+        };
+    }
+
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\n",
+        "TLS: ",
+        feature_tls!(),
+        "\n",
+        "MMAP: ",
+        feature_mmap!()
+    )
+}
+
 #[derive(Parser)]
-#[command(author, version, about)]
+#[command(author, version, long_version(get_long_version()), about)]
 struct Cli {
     /// Logging level
     #[arg(short, long, value_name = "SEVERITY")]
