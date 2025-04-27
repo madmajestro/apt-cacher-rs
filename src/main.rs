@@ -11,6 +11,7 @@ mod http_range;
 mod humanfmt;
 mod log_once;
 mod logstore;
+mod rate_checked_body;
 mod ringbuffer;
 mod task_cache_scan;
 mod task_cleanup;
@@ -30,7 +31,6 @@ use std::num::NonZeroU64;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -82,6 +82,8 @@ use rand::distr::Alphanumeric;
 use rand::distr::Bernoulli;
 use rand::prelude::Distribution;
 use rand::rngs::SmallRng;
+use rate_checked_body::RateCheckedBody;
+use rate_checked_body::RateCheckedBodyErr;
 use simplelog::CombinedLogger;
 use simplelog::ConfigBuilder;
 use simplelog::WriteLogger;
@@ -112,7 +114,6 @@ use crate::http_range::http_parse_range;
 use crate::http_range::systemtime_to_http_datetime;
 use crate::humanfmt::HumanFmt;
 use crate::logstore::LogStore;
-use crate::ringbuffer::SumRingBuffer;
 use crate::task_cache_scan::task_cache_scan;
 use crate::task_cleanup::task_cleanup;
 use crate::task_setup::task_setup;
@@ -130,116 +131,6 @@ const APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PK
 const RETENTION_TIME: Duration = Duration::from_secs(8 * 7 * 24 * 60 * 60); /* 8 weeks */
 
 const VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER: NonZeroU64 = nonzero!(1024 * 1024); /* 1MB */
-
-struct RateChecker {
-    buf: SumRingBuffer<usize>,
-    last: std::time::Instant,
-    min_download_rate: NonZero<usize>,
-}
-
-impl RateChecker {
-    const RATE_CHECK_TIME_SLOTS: NonZero<usize> = nonzero!(30); /* 30 seconds */
-
-    #[must_use]
-    fn new(min_download_rate: NonZero<usize>) -> Self {
-        Self {
-            buf: SumRingBuffer::new(Self::RATE_CHECK_TIME_SLOTS),
-            last: Instant::now(),
-            min_download_rate,
-        }
-    }
-
-    fn add(&mut self, len: usize) {
-        let elapsed = self.last.elapsed();
-        let elapsed_secs = elapsed.as_secs();
-        if elapsed_secs >= 1 {
-            if elapsed_secs > 1 {
-                warn!("More than 1 second elapsed since last poll ({elapsed:?})");
-                for _ in 1..elapsed_secs {
-                    self.buf.push(0);
-                }
-            }
-            self.buf.push(len);
-            self.last = self
-                .last
-                .checked_add(Duration::from_secs(elapsed_secs))
-                .expect("Instant should be representable");
-        } else {
-            self.buf.add_back(len);
-        }
-    }
-
-    fn check_fail(&self) -> Option<(usize, NonZero<usize>)> {
-        if self.buf.is_full() {
-            let total = self.buf.sum();
-            if total / Self::RATE_CHECK_TIME_SLOTS < self.min_download_rate.get() {
-                Some((total, self.buf.capacity()))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-}
-
-enum RateCheckedBodyErr {
-    DownloadRate((usize, NonZero<usize>)),
-    Hyper(hyper::Error),
-    ProxyCache(ProxyCacheError),
-}
-
-struct RateCheckedBody<D> {
-    inner: Pin<Box<dyn Body<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static>>,
-    rchecker: RateChecker,
-}
-
-impl<D: bytes::Buf> RateCheckedBody<D> {
-    fn new<B>(body: B, min_download_rate: NonZero<usize>) -> Self
-    where
-        B: Body<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static,
-        D: bytes::Buf,
-    {
-        Self {
-            inner: Box::pin(body),
-            rchecker: RateChecker::new(min_download_rate),
-        }
-    }
-}
-
-impl<D: bytes::Buf> Body for RateCheckedBody<D> {
-    type Data = D;
-    type Error = RateCheckedBodyErr;
-
-    fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if let Some((total_downloaded, time_limit)) = self.rchecker.check_fail() {
-            return std::task::Poll::Ready(Some(Err(RateCheckedBodyErr::DownloadRate((
-                total_downloaded,
-                time_limit,
-            )))));
-        }
-
-        let msg = self.inner.as_mut().poll_frame(cx);
-        if let std::task::Poll::Ready(Some(Ok(ref frame))) = msg {
-            if let Some(data) = frame.data_ref() {
-                self.rchecker.add(data.remaining());
-            }
-        }
-
-        msg
-    }
-}
 
 enum ChannelBodyError {
     ClientDownloadRate(error::ClientDownloadRate),
