@@ -10,7 +10,7 @@ pub(crate) struct RingBuffer<T> {
     capacity: NonZero<usize>,
 }
 
-#[allow(unused)]
+#[expect(unused)]
 impl<T> RingBuffer<T> {
     #[must_use]
     pub(crate) fn new(capacity: NonZero<usize>) -> Self {

@@ -3,7 +3,7 @@ use std::{net::IpAddr, num::NonZero, time::Duration};
 use crate::{ChannelBodyError, ContentLength};
 use crate::{deb_mirror::Mirror, humanfmt::HumanFmt};
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct ClientDownloadRate {
     pub(crate) total_size: usize,
     pub(crate) timeout_secs: NonZero<usize>,

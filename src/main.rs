@@ -379,7 +379,7 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     aliased,
                     cd.client.ip().to_canonical(),
                     HumanFmt::Time(duration),
-                    error.unwrap_or(String::from("unknown reason")),
+                    error.unwrap_or_else(|| String::from("unknown reason")),
                 );
             } else {
                 warn!(
@@ -392,7 +392,7 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     HumanFmt::Size(size),
                     HumanFmt::Size(transferred_bytes),
                     HumanFmt::Rate(transferred_bytes, duration),
-                    error.unwrap_or(String::from("unknown reason")),
+                    error.unwrap_or_else(|| String::from("unknown reason")),
                 );
             }
         });
@@ -624,7 +624,7 @@ impl Body for MmapBody {
     ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         // TODO: split frames?
         let frame = Frame::data(MmapData {
-            mapping: self.mapping.clone(),
+            mapping: Arc::clone(&self.mapping),
             position: self.position,
             remaining: self.length,
         });
@@ -1092,10 +1092,11 @@ impl ActiveDownloads {
 
         // TODO: use try_insert() once stable: https://github.com/rust-lang/rust/issues/82766
         if let Some(status) = ads.get(&key) {
-            (true, status.clone())
+            (true, Arc::clone(status))
         } else {
             let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init));
-            let was_present = ads.insert(key, status.clone());
+            let was_present = ads.insert(key, Arc::clone(&status));
+            drop(ads);
             assert!(was_present.is_none());
             (false, status)
         }
@@ -1282,7 +1283,7 @@ async fn download_file(
                 .unwrap_or(&conn_details.mirror.host),
         ),
         Path::new(&conn_details.mirror.path),
-        conn_details.subdir.unwrap_or(Path::new("")),
+        conn_details.subdir.unwrap_or_else(|| Path::new("")),
     ]
     .iter()
     .collect();
@@ -1306,7 +1307,7 @@ async fn download_file(
                 .unwrap_or(&conn_details.mirror.host),
         ),
         Path::new(&conn_details.mirror.path),
-        conn_details.subdir.unwrap_or(Path::new("")),
+        conn_details.subdir.unwrap_or_else(|| Path::new("")),
         Path::new(&conn_details.debname),
     ]
     .iter()
@@ -1481,16 +1482,23 @@ async fn serve_unfinished_file(
                         continue;
                     }
                     ActiveDownloadStatus::Aborted(ref err) => {
+                        #[expect(clippy::wildcard_enum_match_arm)]
                         match err {
                             ProxyCacheError::ClientDownloadRate(cdr) => {
-                                let _ = tx
-                                    .send(Err(ChannelBodyError::ClientDownloadRate((*cdr).clone())))
-                                    .await;
+                                if let Err(err) = tx
+                                    .send(Err(ChannelBodyError::ClientDownloadRate(*cdr)))
+                                    .await
+                                {
+                                    warn!("Failed to send client download rate:  {err}");
+                                }
                             }
                             ProxyCacheError::MirrorDownloadRate(mdr) => {
-                                let _ = tx
+                                if let Err(err) = tx
                                     .send(Err(ChannelBodyError::MirrorDownloadRate((*mdr).clone())))
-                                    .await;
+                                    .await
+                                {
+                                    warn!("Failed to send mirror download rate:  {err}");
+                                }
                             }
                             _ => {
                                 warn!(
@@ -1502,7 +1510,7 @@ async fn serve_unfinished_file(
 
                         return;
                     }
-                    _ => {
+                    ActiveDownloadStatus::Init | ActiveDownloadStatus::Download(..) => {
                         error!(
                             "Invalid download state {:?} of file `{}`, cancelling stream",
                             *st,
@@ -1514,6 +1522,12 @@ async fn serve_unfinished_file(
             }
         }
 
+        /* Perform cleanup before database operation */
+        drop(reader);
+        drop(receiver);
+        drop(status);
+        drop(tx);
+
         let elapsed = start.elapsed();
         info!(
             "Served new file {} from mirror {} for client {} in {} (size={}, rate={})",
@@ -1524,12 +1538,6 @@ async fn serve_unfinished_file(
             HumanFmt::Size(bytes),
             HumanFmt::Rate(bytes, elapsed)
         );
-
-        /* Perform cleanup before database operation */
-        drop(reader);
-        drop(receiver);
-        drop(status);
-        drop(tx);
 
         if let Err(err) = database
             .register_deliviery(
@@ -2166,7 +2174,7 @@ async fn serve_new_file(
     *status.lock().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
 
     let cd = conn_details.clone();
-    let st = status.clone();
+    let st = Arc::clone(&status);
     let db = state.database.clone();
     let curr_downloads = state.active_downloads.download_count();
     tokio::task::spawn(async move {
@@ -2288,7 +2296,7 @@ async fn process_cache_request(
                 .unwrap_or(&conn_details.mirror.host),
         ),
         Path::new(&conn_details.mirror.path),
-        conn_details.subdir.unwrap_or(Path::new("")),
+        conn_details.subdir.unwrap_or_else(|| Path::new("")),
         Path::new(&conn_details.debname),
     ]
     .iter()
@@ -2926,7 +2934,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(err) => {
             if config.bind_addr != Ipv6Addr::UNSPECIFIED {
                 error!("Error binding on {addr}:  {err}");
-                Err(err)?;
+                return Err(err.into());
             }
 
             // Fallback to IPv4 to avoid errors when IPv6 is not available and the default configuration is used.
@@ -2946,7 +2954,12 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let https_connector = {
         /* Set a process wide default crypto provider. */
         //let _ = rustls::crypto::ring::default_provider().install_default();
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        if rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .is_err()
+        {
+            warn!("Failed to install aws-lc as default crypto provider");
+        }
 
         let tls_cfg = rustls::ClientConfig::builder()
             .with_native_roots()?
@@ -3232,6 +3245,7 @@ fn global_config() -> &'static Config {
         .config
 }
 
+#[expect(clippy::print_stderr)]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Cli::parse();
 

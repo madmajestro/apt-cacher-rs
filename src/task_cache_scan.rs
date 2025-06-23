@@ -93,8 +93,7 @@ pub(crate) async fn task_cache_scan(database: Database) -> Result<u64, ProxyCach
 }
 
 async fn scan_mirror_dir(host: &DirEntry, mirror: &MirrorEntry) -> u64 {
-    let mut mirror_dir = host.path();
-    mirror_dir.push(Path::new(&mirror.path));
+    let mirror_dir = host.path().join(mirror.path.as_str());
 
     trace!("Scanning mirror directory `{}`...", mirror_dir.display());
 

@@ -95,7 +95,7 @@ impl<'de> Deserialize<'de> for ConfigDomainName {
         use serde::de::Error;
         let s: String = Deserialize::deserialize(deserializer)?;
 
-        ConfigDomainName::new(s)
+        Self::new(s)
             .map_err(|s| anyhow!("Invalid configuration domain `{s}`"))
             .map_err(D::Error::custom)
     }
@@ -137,7 +137,7 @@ impl<'de> Deserialize<'de> for DomainName {
         use serde::de::Error;
         let s: String = Deserialize::deserialize(deserializer)?;
 
-        DomainName::new(s)
+        Self::new(s)
             .map_err(|s| anyhow!("Invalid domain `{s}`"))
             .map_err(D::Error::custom)
     }
@@ -156,7 +156,7 @@ impl From<std::string::String> for DomainName {
 }
 
 impl From<DomainName> for std::string::String {
-    fn from(val: DomainName) -> std::string::String {
+    fn from(val: DomainName) -> Self {
         val.0
     }
 }
@@ -193,7 +193,7 @@ impl<'de> Deserialize<'de> for IpNetOrAddr {
         let s: String = Deserialize::deserialize(deserializer)?;
 
         if let Ok(ip) = s.parse::<IpAddr>() {
-            return Ok(IpNetOrAddr::Addr(ip));
+            return Ok(Self::Addr(ip));
         }
 
         s.parse::<IpNet>()
@@ -685,8 +685,7 @@ impl Config {
             }
         };
 
-        let mut config: Config =
-            toml::from_str(&content).context("Failed to parse configuration")?;
+        let mut config: Self = toml::from_str(&content).context("Failed to parse configuration")?;
 
         config.validate()?;
 

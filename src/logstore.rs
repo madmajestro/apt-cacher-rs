@@ -12,8 +12,8 @@ struct LogStoreImpl {
 }
 
 impl LogStoreImpl {
-    fn new(capacity: NonZeroUsize) -> LogStoreImpl {
-        LogStoreImpl {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
             entries: RingBuffer::new(capacity),
             buffer: Vec::with_capacity(1024),
         }
@@ -59,7 +59,7 @@ pub(crate) struct LogStore {
 
 impl LogStore {
     #[must_use]
-    pub(crate) fn new(capacity: NonZeroUsize) -> LogStore {
+    pub(crate) fn new(capacity: NonZeroUsize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(LogStoreImpl::new(capacity))),
         }
