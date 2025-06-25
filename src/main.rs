@@ -760,6 +760,7 @@ async fn serve_cached_file_mmap(
         );
         // SAFETY:
         // The file is only read from and only forwarded as bytes to a network socket.
+        // Also clients perform a signature check on received packages.
         let memory_map = match unsafe {
             MmapOptions::new()
                 .offset(content_start)

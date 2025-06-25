@@ -19,7 +19,7 @@ exclude = [
 ]
 
 [features]
-default = ["tls_default"]
+default = ["mmap", "tls_default"]
 mmap = ["dep:memmap2"]
 tls_default = ["dep:hyper-tls"]
 tls_rustls = ["dep:hyper-rustls", "dep:rustls"]
