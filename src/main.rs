@@ -3,6 +3,9 @@
     allow(clippy::map_unwrap_or, clippy::unwrap_used, clippy::too_many_lines)
 )]
 
+#[cfg(not(any(feature = "tls_hyper", feature = "tls_rustls")))]
+compile_error!("Either feature \"tls_hyper\" or \"tls_rustls\" must be enabled for this crate.");
+
 mod channel_body;
 mod config;
 mod database;
@@ -82,7 +85,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, body::Body};
 #[cfg(feature = "tls_rustls")]
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-#[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
+#[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
@@ -2948,7 +2951,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     info!("Listening on http://{addr}");
 
-    #[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
+    #[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
     let https_connector = HttpsConnector::new();
 
     #[cfg(feature = "tls_rustls")]
@@ -3167,10 +3170,10 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 fn get_long_version() -> &'static str {
-    #[cfg(all(feature = "tls_default", not(feature = "tls_rustls")))]
+    #[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
     macro_rules! feature_tls {
         () => {
-            "default"
+            "hyper"
         };
     }
 

@@ -32,8 +32,8 @@ The cleanup can also be manually triggered by sending the signal `USR1` to the `
 
 ## TLS
 
-By default the system provided TLS implementation is used.
-To use [`rustls`](https://github.com/rustls/rustls) as backend enable the cargo feature `tls_rustls`.
+By default [`rustls`](https://github.com/rustls/rustls) is used as TLS backend.
+To use the system provided TLS implementation disable default cargo features and enable the cargo feature `tls_hyper`.
 
 ## Security
 
