@@ -1878,7 +1878,7 @@ async fn serve_new_file(
 
         let r = fwd_request.headers_mut().append(
             CACHE_CONTROL,
-            HeaderValue::from_str(&format!("max-age={max_age}")).expect("string is valid"),
+            HeaderValue::try_from(format!("max-age={max_age}")).expect("string is valid"),
         );
         assert!(!r);
     }
@@ -1931,7 +1931,7 @@ async fn serve_new_file(
 
                 let r = redirected_request.headers_mut().append(
                     CACHE_CONTROL,
-                    HeaderValue::from_str(&format!("max-age={max_age}")).expect("string is valid"),
+                    HeaderValue::try_from(format!("max-age={max_age}")).expect("string is valid"),
                 );
                 assert!(!r);
             }
@@ -2008,12 +2008,12 @@ async fn serve_new_file(
                     .header(SERVER, HeaderValue::from_static(APP_NAME))
                     .header(
                         CACHE_CONTROL,
-                        HeaderValue::from_str(&format!("public, max-age={max_age}"))
+                        HeaderValue::try_from(format!("public, max-age={max_age}"))
                             .expect("string is valid"),
                     ) // TODO: send CACHE_CONTROL in other branches as well
                     .header(
                         AGE,
-                        HeaderValue::from_str(&format!(
+                        HeaderValue::try_from(format!(
                             "{}",
                             local_modification_time
                                 .elapsed()
@@ -2240,8 +2240,7 @@ async fn serve_new_file(
                 .header(SERVER, HeaderValue::from_static(APP_NAME))
                 .header(
                     RETRY_AFTER,
-                    HeaderValue::from_str(&gcfg.experimental_parallel_hack_retryafter.to_string())
-                        .expect("string is valid"),
+                    HeaderValue::from(gcfg.experimental_parallel_hack_retryafter.get()),
                 )
                 .body(ProxyCacheBody::Boxed(full("Parallel Download Hack")))
                 .expect("Response is valid");
