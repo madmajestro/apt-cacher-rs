@@ -198,8 +198,9 @@ pub(crate) async fn request_with_retry(
 
     if request.body().size_hint().exact() != Some(0) {
         warn_once_or_info!(
-            "Request body is not empty, cannot retry. Request:  {:?}",
-            request
+            "Request body is not empty, cannot retry. Request:  {:?}. Size hint: {:?}",
+            request,
+            request.body().size_hint()
         );
         return client.request(request).await;
     }
