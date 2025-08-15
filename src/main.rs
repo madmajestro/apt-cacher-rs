@@ -1713,8 +1713,6 @@ async fn serve_downloading_file(
 
 enum CacheFileStat<'a> {
     Volatile((tokio::fs::File, &'a Path, SystemTime)),
-    #[expect(dead_code)]
-    Override,
     New,
 }
 
