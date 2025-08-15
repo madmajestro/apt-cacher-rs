@@ -2926,6 +2926,11 @@ fn is_timeout(err: &hyper::Error) -> bool {
 
 #[expect(clippy::too_many_lines)]
 async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(feature = "tokio_console")]
+    console_subscriber::init();
+    #[cfg(feature = "tokio_console")]
+    warn!("Using console_subscriber for tokio-console...");
+
     let config = global_config();
 
     let mut addr = SocketAddr::from((config.bind_addr, config.bind_port.get()));
