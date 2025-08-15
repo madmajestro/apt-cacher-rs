@@ -190,9 +190,8 @@ async fn get_package_file(
 
         if response.status() != StatusCode::OK {
             warn!(
-                "Request {uri_tmp} failed with status code {}: {:?}",
+                "Request {uri_tmp} failed with status code {}:  {response:?}",
                 response.status(),
-                response
             );
             return Err(GetPackageError::Http(response.status()));
         }

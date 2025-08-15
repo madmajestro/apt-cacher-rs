@@ -1506,7 +1506,7 @@ async fn serve_unfinished_file(
                             }
                             _ => {
                                 warn!(
-                                    "Download of file `{}` aborted, cancelling stream: {err}",
+                                    "Download of file `{}` aborted, cancelling stream:  {err}",
                                     file_path.display()
                                 );
                             }
