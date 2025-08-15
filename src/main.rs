@@ -1751,10 +1751,9 @@ async fn serve_new_file(
     // TODO: upstream constant
     const PROXY_CONNECT: HeaderName = HeaderName::from_static("proxy-connext");
 
-    let is_volatile = matches!(cfstate, CacheFileStat::Volatile(_));
-    let prev_file_size =
+    let (is_volatile, prev_file_size) =
         if let CacheFileStat::Volatile((file, file_path, _local_modification_time)) = &cfstate {
-            match file.metadata().await.map(|md| md.size()) {
+            let size = match file.metadata().await.map(|md| md.size()) {
                 Ok(s) => s,
                 Err(err) => {
                     error!(
@@ -1763,9 +1762,11 @@ async fn serve_new_file(
                     );
                     0
                 }
-            }
+            };
+
+            (true, size)
         } else {
-            0
+            (false, 0)
         };
     let mut client_modified_since = None;
     let mut max_age = 300;
