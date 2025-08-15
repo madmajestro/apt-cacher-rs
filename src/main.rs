@@ -1292,15 +1292,15 @@ async fn download_file(
     .iter()
     .collect();
 
-    if let Err(err) = tokio::fs::create_dir_all(&dest_dir).await {
-        if err.kind() != tokio::io::ErrorKind::AlreadyExists {
-            error!(
-                "Failed to create destination directory {}:  {err}",
-                dest_dir.display()
-            );
-            *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
-            return;
-        }
+    if let Err(err) = tokio::fs::create_dir_all(&dest_dir).await
+        && err.kind() != tokio::io::ErrorKind::AlreadyExists
+    {
+        error!(
+            "Failed to create destination directory {}:  {err}",
+            dest_dir.display()
+        );
+        *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
+        return;
     }
 
     let dest_path: PathBuf = [
@@ -1520,6 +1520,8 @@ async fn serve_unfinished_file(
                             *st,
                             file_path.display()
                         );
+                        drop(st);
+
                         return;
                     }
                 }
@@ -1785,12 +1787,11 @@ async fn serve_new_file(
             &CACHE_CONTROL => {
                 if let Ok(s) = value.to_str() {
                     for p in s.split(',') {
-                        if let Some((key, val)) = p.split_once('=') {
-                            if key == "max-age" {
-                                if let Ok(v) = val.parse::<u32>() {
-                                    max_age = v;
-                                }
-                            }
+                        if let Some((key, val)) = p.split_once('=')
+                            && key == "max-age"
+                            && let Ok(v) = val.parse::<u32>()
+                        {
+                            max_age = v;
                         }
                     }
                 }
@@ -1900,64 +1901,61 @@ async fn serve_new_file(
 
     trace!("Forwarded response: {fwd_response:?}");
 
-    if fwd_response.status() == StatusCode::MOVED_PERMANENTLY {
-        if let Some(moved_uri) = fwd_response
+    if fwd_response.status() == StatusCode::MOVED_PERMANENTLY
+        && let Some(moved_uri) = fwd_response
             .headers()
             .get(LOCATION)
             .and_then(|lc| lc.to_str().ok())
             .and_then(|lc_str| lc_str.parse::<hyper::Uri>().ok())
-        {
-            debug!("Requested URI: {}, Moved URI: {moved_uri:?}", req.uri());
+    {
+        debug!("Requested URI: {}, Moved URI: {moved_uri:?}", req.uri());
 
-            if moved_uri.host().is_some_and(is_host_allowed) {
-                let mut redirected_request = Request::builder()
-                    .method(Method::GET)
-                    .uri(moved_uri)
-                    .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
-                    .header(HOST, fwd_host)
-                    .body(empty())
-                    .expect("request should be valid");
+        if moved_uri.host().is_some_and(is_host_allowed) {
+            let mut redirected_request = Request::builder()
+                .method(Method::GET)
+                .uri(moved_uri)
+                .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
+                .header(HOST, fwd_host)
+                .body(empty())
+                .expect("request should be valid");
 
-                if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) =
-                    &cfstate
-                {
-                    let date_fmt = systemtime_to_http_datetime(*local_modification_time);
+            if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) = &cfstate
+            {
+                let date_fmt = systemtime_to_http_datetime(*local_modification_time);
 
-                    let r = redirected_request.headers_mut().append(
-                        IF_MODIFIED_SINCE,
-                        HeaderValue::try_from(date_fmt).expect("HTTP datetime should be valid"),
-                    );
-                    assert!(!r);
+                let r = redirected_request.headers_mut().append(
+                    IF_MODIFIED_SINCE,
+                    HeaderValue::try_from(date_fmt).expect("HTTP datetime should be valid"),
+                );
+                assert!(!r);
 
-                    let r = redirected_request.headers_mut().append(
-                        CACHE_CONTROL,
-                        HeaderValue::from_str(&format!("max-age={max_age}"))
-                            .expect("string is valid"),
-                    );
-                    assert!(!r);
-                }
-
-                trace!("Forwarded redirected request: {redirected_request:?}");
-
-                let redirected_response =
-                    match request_with_retry(&state.https_client, redirected_request).await {
-                        Ok(r) => r,
-                        Err(err) => {
-                            warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
-                            state
-                                .active_downloads
-                                .remove(&conn_details.mirror, &conn_details.debname);
-                            return quick_response(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "Proxy request failed",
-                            );
-                        }
-                    };
-
-                trace!("Forwarded redirected response: {redirected_response:?}");
-
-                fwd_response = redirected_response;
+                let r = redirected_request.headers_mut().append(
+                    CACHE_CONTROL,
+                    HeaderValue::from_str(&format!("max-age={max_age}")).expect("string is valid"),
+                );
+                assert!(!r);
             }
+
+            trace!("Forwarded redirected request: {redirected_request:?}");
+
+            let redirected_response =
+                match request_with_retry(&state.https_client, redirected_request).await {
+                    Ok(r) => r,
+                    Err(err) => {
+                        warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
+                        state
+                            .active_downloads
+                            .remove(&conn_details.mirror, &conn_details.debname);
+                        return quick_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Proxy request failed",
+                        );
+                    }
+                };
+
+            trace!("Forwarded redirected response: {redirected_response:?}");
+
+            fwd_response = redirected_response;
         }
     }
 
@@ -1975,67 +1973,66 @@ async fn serve_new_file(
                 .to_str()
                 .ok()
                 .and_then(http_datetime_to_systemtime)
+                && client_modified_time >= local_modification_time
             {
-                if client_modified_time >= local_modification_time {
-                    info!(
-                        "Serving info about up-to-date cached file {} from mirror {} for client {}",
-                        conn_details.debname,
-                        conn_details.mirror,
-                        conn_details.client.ip().to_canonical()
-                    );
+                info!(
+                    "Serving info about up-to-date cached file {} from mirror {} for client {}",
+                    conn_details.debname,
+                    conn_details.mirror,
+                    conn_details.client.ip().to_canonical()
+                );
 
-                    /*
-                     * Response {
-                     *     status: 304,
-                     *     version: HTTP/1.1,
-                     *     headers: {
-                     *         "connection": "keep-alive",
-                     *         "date": "Sat, 08 Jun 2024 12:50:39 GMT",
-                     *         "via": "1.1 varnish",
-                     *         "cache-control": "public, max-age=120",
-                     *         "etag": "\"306ed-61a5ca11810f3\"",
-                     *         "age": "104",
-                     *         "x-served-by": "cache-fra-eddf8230031-FRA",
-                     *         "x-cache": "HIT",
-                     *         "x-cache-hits": "1",
-                     *         "x-timer": "S1717851040.758717,VS0,VE1"
-                     *     },
-                     *     body: Body(Empty)
-                     * }
-                     */
+                /*
+                 * Response {
+                 *     status: 304,
+                 *     version: HTTP/1.1,
+                 *     headers: {
+                 *         "connection": "keep-alive",
+                 *         "date": "Sat, 08 Jun 2024 12:50:39 GMT",
+                 *         "via": "1.1 varnish",
+                 *         "cache-control": "public, max-age=120",
+                 *         "etag": "\"306ed-61a5ca11810f3\"",
+                 *         "age": "104",
+                 *         "x-served-by": "cache-fra-eddf8230031-FRA",
+                 *         "x-cache": "HIT",
+                 *         "x-cache-hits": "1",
+                 *         "x-timer": "S1717851040.758717,VS0,VE1"
+                 *     },
+                 *     body: Body(Empty)
+                 * }
+                 */
 
-                    let mut response = Response::builder()
-                        .status(StatusCode::NOT_MODIFIED)
-                        .header(CONNECTION, HeaderValue::from_static("keep-alive"))
-                        .header(SERVER, HeaderValue::from_static(APP_NAME))
-                        .header(
-                            CACHE_CONTROL,
-                            HeaderValue::from_str(&format!("public, max-age={max_age}"))
-                                .expect("string is valid"),
-                        ) // TODO: send CACHE_CONTROL in other branches as well
-                        .header(
-                            AGE,
-                            HeaderValue::from_str(&format!(
-                                "{}",
-                                local_modification_time
-                                    .elapsed()
-                                    .map(|dur| dur.as_secs())
-                                    .unwrap_or(0)
-                            ))
+                let mut response = Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header(CONNECTION, HeaderValue::from_static("keep-alive"))
+                    .header(SERVER, HeaderValue::from_static(APP_NAME))
+                    .header(
+                        CACHE_CONTROL,
+                        HeaderValue::from_str(&format!("public, max-age={max_age}"))
                             .expect("string is valid"),
-                        ) // TODO: send AGE in other branches as well
-                        .body(ProxyCacheBody::Boxed(empty()))
-                        .expect("HTTP response is valid");
+                    ) // TODO: send CACHE_CONTROL in other branches as well
+                    .header(
+                        AGE,
+                        HeaderValue::from_str(&format!(
+                            "{}",
+                            local_modification_time
+                                .elapsed()
+                                .map(|dur| dur.as_secs())
+                                .unwrap_or(0)
+                        ))
+                        .expect("string is valid"),
+                    ) // TODO: send AGE in other branches as well
+                    .body(ProxyCacheBody::Boxed(empty()))
+                    .expect("HTTP response is valid");
 
-                    if let Some(date) = fwd_response.headers_mut().remove(DATE) {
-                        let r = response.headers_mut().append(DATE, date);
-                        assert!(!r);
-                    }
-
-                    trace!("Outgoing response of up-to-date cached file: {response:?}");
-
-                    return response;
+                if let Some(date) = fwd_response.headers_mut().remove(DATE) {
+                    let r = response.headers_mut().append(DATE, date);
+                    assert!(!r);
                 }
+
+                trace!("Outgoing response of up-to-date cached file: {response:?}");
+
+                return response;
             }
 
             info!(
@@ -2786,74 +2783,71 @@ async fn pre_process_client_request(
 
             trace!("Forwarded response: {fwd_response:?}");
 
-            if fwd_response.status().is_success() || fwd_response.status().is_redirection() {
-                if let Some(origin) =
+            if (fwd_response.status().is_success() || fwd_response.status().is_redirection())
+                && let Some(origin) =
                     Origin::from_path(parts_cloned.uri.path(), requested_host.clone())
-                {
-                    debug!("Extracted origin: {origin:?}");
+            {
+                debug!("Extracted origin: {origin:?}");
 
-                    match origin.architecture.as_str() {
-                        // TODO: cache some of them?
-                        "dep11" | "i18n" | "source" => (),
-                        _ => {
-                            if let Err(err) = state.database.add_origin(&origin.as_ref()).await {
-                                error!("Error registering origin {origin:?}:  {err}");
-                            }
+                match origin.architecture.as_str() {
+                    // TODO: cache some of them?
+                    "dep11" | "i18n" | "source" => (),
+                    _ => {
+                        if let Err(err) = state.database.add_origin(&origin.as_ref()).await {
+                            error!("Error registering origin {origin:?}:  {err}");
                         }
                     }
                 }
             }
 
-            if fwd_response.status() == StatusCode::MOVED_PERMANENTLY {
-                if let Some(moved_uri) = fwd_response
+            if fwd_response.status() == StatusCode::MOVED_PERMANENTLY
+                && let Some(moved_uri) = fwd_response
                     .headers()
                     .get(LOCATION)
                     .and_then(|lc| lc.to_str().ok())
                     .and_then(|lc_str| lc_str.parse::<hyper::Uri>().ok())
-                {
-                    debug!(
-                        "Requested URI: {}, Moved URI: {moved_uri}, Body is-empty: {}",
-                        parts_cloned.uri, is_empty_body
-                    );
+            {
+                debug!(
+                    "Requested URI: {}, Moved URI: {moved_uri}, Body is-empty: {}",
+                    parts_cloned.uri, is_empty_body
+                );
 
-                    if moved_uri.host().is_some_and(is_host_allowed) {
-                        parts_cloned.uri = moved_uri;
-                        let redirected_request = Request::from_parts(parts_cloned, empty());
+                if moved_uri.host().is_some_and(is_host_allowed) {
+                    parts_cloned.uri = moved_uri;
+                    let redirected_request = Request::from_parts(parts_cloned, empty());
 
-                        trace!("Redirected request: {redirected_request:?}");
+                    trace!("Redirected request: {redirected_request:?}");
 
-                        let redirected_response = match request_with_retry(
-                            &state.https_client,
-                            redirected_request,
-                        )
-                        .await
-                        {
-                            Ok(r) => r,
-                            Err(err) => {
-                                warn!(
-                                    "Redirected proxy request to host {requested_host} failed:  {err}"
-                                );
-                                return quick_response(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "Proxy request failed",
-                                );
-                            }
-                        };
+                    let redirected_response = match request_with_retry(
+                        &state.https_client,
+                        redirected_request,
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(err) => {
+                            warn!(
+                                "Redirected proxy request to host {requested_host} failed:  {err}"
+                            );
+                            return quick_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "Proxy request failed",
+                            );
+                        }
+                    };
 
-                        trace!("Redirected response: {redirected_response:?}");
+                    trace!("Redirected response: {redirected_response:?}");
 
-                        let (parts, body) = redirected_response.into_parts();
+                    let (parts, body) = redirected_response.into_parts();
 
-                        let body = ProxyCacheBody::Boxed(BoxBody::new(
-                            body.map_err(ProxyCacheError::Hyper),
-                        ));
+                    let body =
+                        ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
 
-                        let response = Response::from_parts(parts, body);
+                    let response = Response::from_parts(parts, body);
 
-                        trace!("Outgoing response: {response:?}");
+                    trace!("Outgoing response: {response:?}");
 
-                        return response;
-                    }
+                    return response;
                 }
             }
 
@@ -2889,12 +2883,11 @@ fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody<bytes::Bytes, ProxyCacheErro
 
 #[must_use]
 fn is_iokind(err: &hyper::Error, kind: std::io::ErrorKind) -> bool {
-    if let Some(err) = std::error::Error::source(&err) {
-        if let Some(ioerr) = err.downcast_ref::<std::io::Error>() {
-            if ioerr.kind() == kind {
-                return true;
-            }
-        }
+    if let Some(err) = std::error::Error::source(&err)
+        && let Some(ioerr) = err.downcast_ref::<std::io::Error>()
+        && ioerr.kind() == kind
+    {
+        return true;
     }
 
     false

@@ -119,10 +119,10 @@ impl<D: bytes::Buf> Body for RateCheckedBody<D> {
         }
 
         let msg = self.inner.as_mut().poll_frame(cx);
-        if let std::task::Poll::Ready(Some(Ok(ref frame))) = msg {
-            if let Some(data) = frame.data_ref() {
-                self.rchecker.add(data.remaining());
-            }
+        if let std::task::Poll::Ready(Some(Ok(ref frame))) = msg
+            && let Some(data) = frame.data_ref()
+        {
+            self.rchecker.add(data.remaining());
         }
 
         msg

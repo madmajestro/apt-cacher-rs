@@ -52,10 +52,10 @@ async fn collect_cached_files(
     while let Some(entry) = host_dir.next_entry().await? {
         let path = entry.path();
 
-        if let Some(ext) = path.extension() {
-            if ext == "deb" {
-                ret.insert(entry.file_name(), path);
-            }
+        if let Some(ext) = path.extension()
+            && ext == "deb"
+        {
+            ret.insert(entry.file_name(), path);
         }
     }
 
@@ -554,16 +554,16 @@ async fn cleanup_mirror(
                 }
             };
 
-            if let Ok(existing_for) = now.duration_since(created) {
-                if existing_for < KEEP_SPAN {
-                    debug!(
-                        "Keeping unreferenced file `{}` since it is to new ({}s, threshold={}s)",
-                        path.display(),
-                        existing_for.as_secs(),
-                        KEEP_SPAN.as_secs()
-                    );
-                    continue;
-                }
+            if let Ok(existing_for) = now.duration_since(created)
+                && existing_for < KEEP_SPAN
+            {
+                debug!(
+                    "Keeping unreferenced file `{}` since it is to new ({}s, threshold={}s)",
+                    path.display(),
+                    existing_for.as_secs(),
+                    KEEP_SPAN.as_secs()
+                );
+                continue;
             }
         }
 
