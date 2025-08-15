@@ -1559,7 +1559,7 @@ async fn serve_unfinished_file(
     });
 
     let mut response_builder = Response::builder()
-        .status(200)
+        .status(StatusCode::OK)
         .header(CONNECTION, HeaderValue::from_static("keep-alive"))
         .header(
             CONTENT_TYPE,
