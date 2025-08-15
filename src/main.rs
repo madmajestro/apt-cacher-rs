@@ -2850,11 +2850,9 @@ async fn pre_process_client_request(
                 }
             }
 
-            let (parts, body) = fwd_response.into_parts();
-
-            let body = ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
-
-            let response = Response::from_parts(parts, body);
+            let response = fwd_response.map(|body| {
+                ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)))
+            });
 
             trace!("Outgoing response: {response:?}");
 
