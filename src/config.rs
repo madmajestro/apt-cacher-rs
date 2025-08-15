@@ -2,9 +2,6 @@ use std::cmp::Ordering;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::num::NonZero;
-use std::num::NonZeroU16;
-use std::num::NonZeroU64;
-use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
@@ -36,18 +33,18 @@ macro_rules! nonzero {
 }
 
 pub(crate) const DEFAULT_BIND_ADDRESS: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
-pub(crate) const DEFAULT_BIND_PORT: NonZeroU16 = nonzero!(3142);
+pub(crate) const DEFAULT_BIND_PORT: NonZero<u16> = nonzero!(3142);
 pub(crate) const DEFAULT_BUF_SIZE: usize = 32768;
 pub(crate) const DEFAULT_CACHE_DIR: &str = "/var/cache/apt-cacher-rs";
 pub(crate) const DEFAULT_CONFIGURATION_PATH: &str = "/etc/apt-cacher-rs/apt-cacher-rs.conf";
 pub(crate) const DEFAULT_DATABASE_PATH: &str = "/var/lib/apt-cacher-rs/apt-cacher-rs.db";
 pub(crate) const DEFAULT_DATABASE_SLOW_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const DEFAULT_DISK_QUOTA: Option<NonZeroU64> = None;
+pub(crate) const DEFAULT_DISK_QUOTA: Option<NonZero<u64>> = None;
 pub(crate) const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_HTTPS_TUNNEL_ENABLED: bool = true;
 pub(crate) const DEFAULT_HTTPS_TUNNEL_ALLOWED_PORTS: [NonZero<u16>; 1] = [nonzero!(443)];
 pub(crate) const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::Info;
-pub(crate) const DEFAULT_LOGSTORE_CAPACITY: NonZeroUsize = nonzero!(100);
+pub(crate) const DEFAULT_LOGSTORE_CAPACITY: NonZero<usize> = nonzero!(100);
 pub(crate) const DEFAULT_MIN_DOWNLOAD_RATE: Option<NonZero<usize>> = Some(nonzero!(10000));
 pub(crate) const DEFAULT_USAGE_RETENTION_DAYS: u64 = 30;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_ENABLED: bool = false;
@@ -216,7 +213,7 @@ pub(crate) struct Config {
 
     /// Port to listen on.
     #[serde(default = "default_bind_port")]
-    pub(crate) bind_port: NonZeroU16,
+    pub(crate) bind_port: NonZero<u16>,
 
     /// Path to database.
     #[serde(default = "default_database_path")]
@@ -246,14 +243,14 @@ pub(crate) struct Config {
 
     /// Number of stored error and warning log messages.
     #[serde(default = "default_logstore_capacity")]
-    pub(crate) logstore_capacity: NonZeroUsize,
+    pub(crate) logstore_capacity: NonZero<usize>,
 
     /// Disk quota for cache.
     #[serde(
         default = "default_disk_quota",
         deserialize_with = "from_nonzero_u64_with_magnitude"
     )]
-    pub(crate) disk_quota: Option<NonZeroU64>,
+    pub(crate) disk_quota: Option<NonZero<u64>>,
 
     /// Retention time for usage logs.
     #[serde(default = "default_usage_retention_days")]
@@ -277,7 +274,7 @@ pub(crate) struct Config {
 
     /// Allowed ports for https tunneling.
     #[serde(default = "default_https_tunnel_allowed_ports")]
-    pub(crate) https_tunnel_allowed_ports: Vec<NonZeroU16>,
+    pub(crate) https_tunnel_allowed_ports: Vec<NonZero<u16>>,
 
     /// Allowed mirrors for https tunneling.
     #[serde(default = "default_https_tunnel_allowed_mirrors")]
@@ -387,7 +384,7 @@ fn parse_usize_with_magnitude(s: &str) -> anyhow::Result<usize> {
 
 fn from_nonzero_usize_with_magnitude<'de, D>(
     deserializer: D,
-) -> Result<Option<NonZeroUsize>, D::Error>
+) -> Result<Option<NonZero<usize>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -399,7 +396,9 @@ where
         .map_err(D::Error::custom)
 }
 
-fn from_nonzero_u64_with_magnitude<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
+fn from_nonzero_u64_with_magnitude<'de, D>(
+    deserializer: D,
+) -> Result<Option<NonZero<u64>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -468,7 +467,7 @@ const fn default_bind_addr() -> IpAddr {
     DEFAULT_BIND_ADDRESS
 }
 
-const fn default_bind_port() -> NonZeroU16 {
+const fn default_bind_port() -> NonZero<u16> {
     DEFAULT_BIND_PORT
 }
 
@@ -504,7 +503,7 @@ const fn default_allowed_mirrors() -> Vec<ConfigDomainName> {
     Vec::new()
 }
 
-const fn default_disk_quota() -> Option<NonZeroU64> {
+const fn default_disk_quota() -> Option<NonZero<u64>> {
     DEFAULT_DISK_QUOTA
 }
 
@@ -512,7 +511,7 @@ const fn default_https_tunnel_enabled() -> bool {
     DEFAULT_HTTPS_TUNNEL_ENABLED
 }
 
-fn default_https_tunnel_allowed_ports() -> Vec<NonZeroU16> {
+fn default_https_tunnel_allowed_ports() -> Vec<NonZero<u16>> {
     DEFAULT_HTTPS_TUNNEL_ALLOWED_PORTS.to_vec()
 }
 
@@ -524,7 +523,7 @@ const fn default_usage_retention_days() -> u64 {
     DEFAULT_USAGE_RETENTION_DAYS
 }
 
-const fn default_logstore_capacity() -> NonZeroUsize {
+const fn default_logstore_capacity() -> NonZero<usize> {
     DEFAULT_LOGSTORE_CAPACITY
 }
 

@@ -34,8 +34,6 @@ use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZero;
-use std::num::NonZeroU16;
-use std::num::NonZeroU64;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -149,7 +147,7 @@ const APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PK
 
 const RETENTION_TIME: Duration = Duration::from_secs(8 * 7 * 24 * 60 * 60); /* 8 weeks */
 
-const VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER: NonZeroU64 = nonzero!(1024 * 1024); /* 1MB */
+const VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER: NonZero<u64> = nonzero!(1024 * 1024); /* 1MB */
 
 async fn tokio_mkstemp(
     path: &Path,
@@ -1730,13 +1728,13 @@ fn is_host_allowed(requested_host: &str) -> bool {
 #[derive(Clone, Copy, Debug)]
 enum ContentLength {
     /// An exact size
-    Exact(NonZeroU64),
+    Exact(NonZero<u64>),
     /// A limit for an unknown size
-    Unknown(NonZeroU64),
+    Unknown(NonZero<u64>),
 }
 
 impl ContentLength {
-    const fn upper(&self) -> NonZeroU64 {
+    const fn upper(&self) -> NonZero<u64> {
         match self {
             Self::Exact(s) | Self::Unknown(s) => *s,
         }
@@ -2075,7 +2073,7 @@ async fn serve_new_file(
     let content_length = match fwd_response.headers().get(CONTENT_LENGTH).and_then(|hv| {
         hv.to_str()
             .ok()
-            .and_then(|ct| ct.parse::<NonZeroU64>().ok())
+            .and_then(|ct| ct.parse::<NonZero<u64>>().ok())
     }) {
         Some(size) => ContentLength::Exact(size),
         None if is_volatile => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
@@ -2256,7 +2254,7 @@ async fn tunnel(
     client: SocketAddr,
     upgraded: hyper::upgrade::Upgraded,
     host: &str,
-    port: NonZeroU16,
+    port: NonZero<u16>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
 

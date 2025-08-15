@@ -1,5 +1,5 @@
 use std::{
-    num::NonZeroUsize,
+    num::NonZero,
     sync::{Arc, Mutex},
 };
 
@@ -12,7 +12,7 @@ struct LogStoreImpl {
 }
 
 impl LogStoreImpl {
-    fn new(capacity: NonZeroUsize) -> Self {
+    fn new(capacity: NonZero<usize>) -> Self {
         Self {
             entries: RingBuffer::new(capacity),
             buffer: Vec::with_capacity(1024),
@@ -59,7 +59,7 @@ pub(crate) struct LogStore {
 
 impl LogStore {
     #[must_use]
-    pub(crate) fn new(capacity: NonZeroUsize) -> Self {
+    pub(crate) fn new(capacity: NonZero<usize>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(LogStoreImpl::new(capacity))),
         }
