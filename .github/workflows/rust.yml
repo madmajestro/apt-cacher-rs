@@ -68,4 +68,4 @@ jobs:
         run: sudo apt-get install -y codespell
 
       - name: Run codespell
-        run: codespell -L crate src/ apt-cacher-rs.conf apt-cacher-rs.init apt-cacher-rs.service README.md
+        run: codespell -L crate debian/ src/ apt-cacher-rs.conf apt-cacher-rs.init apt-cacher-rs.service README.md TODO
