@@ -427,8 +427,7 @@ impl Body for ProxyCacheBody {
                 .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Mmap))
                 .map_err(|never| match never {}),
             #[cfg(feature = "mmap")]
-            EnumProj::MmapRateChecked(mut memory_map, client_ip) => memory_map
-                .as_mut()
+            EnumProj::MmapRateChecked(memory_map, client_ip) => memory_map
                 .poll_frame(cx)
                 .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Mmap))
                 .map_err(|rerr| match rerr {
