@@ -1,10 +1,6 @@
-use std::{
-    fmt::Debug,
-    num::NonZero,
-    pin::Pin,
-    time::{Duration, Instant},
-};
+use std::{fmt::Debug, num::NonZero, pin::Pin};
 
+use coarsetime::{Duration, Instant};
 use hyper::body::{Body, Frame, SizeHint};
 use log::warn;
 
@@ -13,7 +9,7 @@ use crate::{ProxyCacheError, nonzero, ringbuffer::SumRingBuffer};
 #[derive(Debug)]
 struct RateChecker {
     buf: SumRingBuffer<usize>,
-    last: std::time::Instant,
+    last: Instant,
     min_download_rate: NonZero<usize>,
 }
 
@@ -34,7 +30,10 @@ impl RateChecker {
         let elapsed_secs = elapsed.as_secs();
         if elapsed_secs >= 1 {
             if elapsed_secs > 1 {
-                warn!("More than 1 second elapsed since last poll ({elapsed:?})");
+                warn!(
+                    "RateChecker: more than 1 second elapsed since last poll ({}s)",
+                    elapsed.as_f64()
+                );
                 for _ in 1..elapsed_secs {
                     self.buf.push(0);
                 }
