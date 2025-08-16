@@ -592,8 +592,7 @@ async fn cleanup_mirror(
     }
 
     info!(
-        "Removed {} unreferenced files for mirror {}/{} ({})",
-        files_removed,
+        "Removed {files_removed} unreferenced files for mirror {}/{} ({})",
         mirror.host,
         mirror.path,
         HumanFmt::Size(bytes_removed)

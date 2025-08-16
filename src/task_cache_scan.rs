@@ -22,7 +22,7 @@ pub(crate) async fn task_cache_scan(database: Database) -> Result<u64, ProxyCach
 
     let cache_path = &global_config().cache_directory;
 
-    trace!("Scanning directory {}...", cache_path.display());
+    trace!("Scanning directory `{}`...", cache_path.display());
 
     let mut cache_dir = match tokio::fs::read_dir(cache_path).await {
         Ok(d) => d,

@@ -6,7 +6,7 @@ use crate::global_config;
 fn remove_dir_contents<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(path)? {
         let entry_path = entry?.path();
-        debug!("Removing file {}", entry_path.display());
+        debug!("Removing file `{}`", entry_path.display());
         std::fs::remove_file(&entry_path)
             .with_context(|| format!("Failed to remove entry `{}`", entry_path.display()))?;
     }
