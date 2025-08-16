@@ -446,6 +446,26 @@ impl Body for ProxyCacheBody {
                 .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Bytes)),
         }
     }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            #[cfg(feature = "mmap")]
+            Self::Mmap(mmap_body) => mmap_body.size_hint(),
+            #[cfg(feature = "mmap")]
+            Self::MmapRateChecked(rate_checked_body, _ip_addr) => rate_checked_body.size_hint(),
+            Self::Boxed(box_body) => box_body.size_hint(),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            #[cfg(feature = "mmap")]
+            Self::Mmap(mmap_body) => mmap_body.is_end_stream(),
+            #[cfg(feature = "mmap")]
+            Self::MmapRateChecked(rate_checked_body, _ip_addr) => rate_checked_body.is_end_stream(),
+            Self::Boxed(box_body) => box_body.is_end_stream(),
+        }
+    }
 }
 
 enum ProxyCacheBodyData {
