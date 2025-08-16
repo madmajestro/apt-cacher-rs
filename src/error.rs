@@ -1,19 +1,18 @@
-use std::{net::IpAddr, num::NonZero, time::Duration};
+use std::{net::IpAddr, time::Duration};
 
+use crate::rate_checked_body::DownloadRateError;
 use crate::{ChannelBodyError, ContentLength};
 use crate::{deb_mirror::Mirror, humanfmt::HumanFmt};
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ClientDownloadRate {
-    pub(crate) total_size: usize,
-    pub(crate) timeout_secs: NonZero<usize>,
+    pub(crate) download_rate_err: DownloadRateError,
     pub(crate) client_ip: IpAddr,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct MirrorDownloadRate {
-    pub(crate) total_size: usize,
-    pub(crate) timeout_secs: NonZero<usize>,
+    pub(crate) download_rate_err: DownloadRateError,
     pub(crate) mirror: Mirror,
     pub(crate) debname: String,
     pub(crate) client_ip: IpAddr,
@@ -44,8 +43,7 @@ impl std::fmt::Display for ProxyCacheError {
             Self::SystemTime(e) => e.fmt(f),
             Self::Utf8(e) => e.fmt(f),
             Self::ClientDownloadRate(ClientDownloadRate {
-                total_size: total,
-                timeout_secs,
+                download_rate_err,
                 client_ip,
             }) => {
                 write!(
@@ -53,15 +51,14 @@ impl std::fmt::Display for ProxyCacheError {
                     "Timeout occurred for client {} after a download rate of {} for the last {} seconds",
                     client_ip.to_canonical(),
                     HumanFmt::Rate(
-                        *total as u64,
-                        Duration::from_secs((*timeout_secs).get() as u64)
+                        download_rate_err.download_size as u64,
+                        Duration::from_secs(download_rate_err.timeframe.get() as u64)
                     ),
-                    timeout_secs,
+                    download_rate_err.timeframe,
                 )
             }
             Self::MirrorDownloadRate(MirrorDownloadRate {
-                total_size,
-                timeout_secs,
+                download_rate_err,
                 mirror,
                 debname,
                 client_ip,
@@ -73,10 +70,10 @@ impl std::fmt::Display for ProxyCacheError {
                     debname,
                     client_ip.to_canonical(),
                     HumanFmt::Rate(
-                        *total_size as u64,
-                        Duration::from_secs((*timeout_secs).get() as u64)
+                        download_rate_err.download_size as u64,
+                        Duration::from_secs(download_rate_err.timeframe.get() as u64)
                     ),
-                    timeout_secs,
+                    download_rate_err.timeframe,
                 )
             }
             Self::Memfd(e) => e.fmt(f),

@@ -49,11 +49,14 @@ impl RateChecker {
     }
 
     #[must_use]
-    fn check_fail(&self) -> Option<(usize, NonZero<usize>)> {
+    fn check_fail(&self) -> Option<DownloadRateError> {
         if self.buf.is_full() {
             let total = self.buf.sum();
             if total / Self::RATE_CHECK_TIME_SLOTS < self.min_download_rate.get() {
-                Some((total, self.buf.capacity()))
+                Some(DownloadRateError {
+                    download_size: total,
+                    timeframe: self.buf.capacity(),
+                })
             } else {
                 None
             }
@@ -63,8 +66,14 @@ impl RateChecker {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct DownloadRateError {
+    pub(crate) download_size: usize,
+    pub(crate) timeframe: NonZero<usize>,
+}
+
 pub(crate) enum RateCheckedBodyErr {
-    DownloadRate((usize, NonZero<usize>)),
+    DownloadRate(DownloadRateError),
     Hyper(hyper::Error),
     ProxyCache(ProxyCacheError),
 }
@@ -83,6 +92,7 @@ pub(crate) struct RateCheckedBody<D> {
 }
 
 impl<D: bytes::Buf> RateCheckedBody<D> {
+    #[must_use]
     pub(crate) fn new<B>(body: B, min_download_rate: NonZero<usize>) -> Self
     where
         B: DebugBody<Data = D, Error = RateCheckedBodyErr> + Send + Sync + 'static,
@@ -111,11 +121,10 @@ impl<D: bytes::Buf> Body for RateCheckedBody<D> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if let Some((total_downloaded, time_limit)) = self.rchecker.check_fail() {
-            return std::task::Poll::Ready(Some(Err(RateCheckedBodyErr::DownloadRate((
-                total_downloaded,
-                time_limit,
-            )))));
+        if let Some(download_rate_err) = self.rchecker.check_fail() {
+            return std::task::Poll::Ready(Some(Err(RateCheckedBodyErr::DownloadRate(
+                download_rate_err,
+            ))));
         }
 
         let msg = self.inner.as_mut().poll_frame(cx);

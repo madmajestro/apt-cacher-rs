@@ -424,10 +424,9 @@ impl Body for ProxyCacheBody {
                 .poll_frame(cx)
                 .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Mmap))
                 .map_err(|rerr| match rerr {
-                    RateCheckedBodyErr::DownloadRate((total_size, timeout_secs)) => {
+                    RateCheckedBodyErr::DownloadRate(download_rate_err) => {
                         ProxyCacheError::ClientDownloadRate(error::ClientDownloadRate {
-                            total_size,
-                            timeout_secs,
+                            download_rate_err,
                             client_ip: *client_ip,
                         })
                     }
@@ -1211,11 +1210,10 @@ async fn download_file(
             Ok(f) => f,
             Err(err) => {
                 match err {
-                    RateCheckedBodyErr::DownloadRate((total_size, timeout_secs)) => {
+                    RateCheckedBodyErr::DownloadRate(download_rate_err) => {
                         *status.lock().await = ActiveDownloadStatus::Aborted(
                             ProxyCacheError::MirrorDownloadRate(error::MirrorDownloadRate {
-                                total_size,
-                                timeout_secs,
+                                download_rate_err,
                                 mirror: conn_details.mirror.clone(),
                                 debname: conn_details.debname.clone(),
                                 client_ip: conn_details.client.ip(),
@@ -1604,10 +1602,9 @@ async fn serve_unfinished_file(
             response_builder
                 .body(ProxyCacheBody::Boxed(BoxBody::new(
                     checked_channel_body.map_err(move |rerr| match rerr {
-                        RateCheckedBodyErr::DownloadRate((total_size, timeout_secs)) => {
+                        RateCheckedBodyErr::DownloadRate(download_rate_err) => {
                             ProxyCacheError::ClientDownloadRate(error::ClientDownloadRate {
-                                total_size,
-                                timeout_secs,
+                                download_rate_err,
                                 client_ip: conn_details.client.ip(),
                             })
                         }
