@@ -322,10 +322,10 @@ async fn task_cleanup_impl(
 
         /* auto-repair small abnormalities */
         {
-            const AUTO_REPAIR_THESHOLD: u64 = 10 * 1024;
-            if difference < AUTO_REPAIR_THESHOLD {
+            const AUTO_REPAIR_THRESHOLD: u64 = 10 * 1024;
+            if difference < AUTO_REPAIR_THRESHOLD {
                 debug!(
-                    "Auto-repairing small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THESHOLD})"
+                    "Auto-repairing small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
                 );
                 *mg_cache_size = actual_cache_size + active_downloading_size;
             }
