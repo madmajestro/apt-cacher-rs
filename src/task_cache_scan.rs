@@ -92,6 +92,7 @@ pub(crate) async fn task_cache_scan(database: Database) -> Result<u64, ProxyCach
     Ok(cache_size)
 }
 
+#[must_use]
 async fn scan_mirror_dir(host: &DirEntry, mirror: &MirrorEntry) -> u64 {
     let mirror_dir = host.path().join(mirror.path.as_str());
 
@@ -159,6 +160,7 @@ async fn scan_mirror_dir(host: &DirEntry, mirror: &MirrorEntry) -> u64 {
     dir_size
 }
 
+#[must_use]
 async fn scan_sub_dir(entry: DirEntry) -> u64 {
     let entry_path = entry.path();
 

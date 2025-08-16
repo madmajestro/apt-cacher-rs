@@ -12,6 +12,7 @@ struct LogStoreImpl {
 }
 
 impl LogStoreImpl {
+    #[must_use]
     fn new(capacity: NonZero<usize>) -> Self {
         Self {
             entries: RingBuffer::new(capacity),
@@ -19,6 +20,7 @@ impl LogStoreImpl {
         }
     }
 
+    #[must_use]
     fn iter(&self) -> std::collections::vec_deque::Iter<'_, std::string::String> {
         self.entries.iter()
     }
@@ -67,7 +69,6 @@ impl LogStore {
 }
 
 impl LogStore {
-    #[must_use]
     pub(crate) fn entries(&self) -> LogStoreEntryListGuard<'_> {
         let guard = self.inner.lock().expect("Other users should not panic");
         LogStoreEntryListGuard { guard }
@@ -85,6 +86,7 @@ impl std::io::Write for LogStore {
     }
 }
 
+#[must_use]
 pub(crate) struct LogStoreEntryListGuard<'a> {
     guard: std::sync::MutexGuard<'a, LogStoreImpl>,
 }

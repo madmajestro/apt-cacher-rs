@@ -34,6 +34,7 @@ impl<T> RingBuffer<T> {
         self.inner.pop_front()
     }
 
+    #[must_use]
     pub(crate) fn back_mut(&mut self) -> Option<&mut T> {
         self.inner.back_mut()
     }
@@ -49,7 +50,7 @@ impl<T> RingBuffer<T> {
     }
 
     #[must_use]
-    pub(crate) fn capacity(&self) -> NonZero<usize> {
+    pub(crate) const fn capacity(&self) -> NonZero<usize> {
         self.capacity
     }
 }
@@ -106,7 +107,7 @@ where
     }
 
     #[must_use]
-    pub(crate) fn capacity(&self) -> NonZero<usize> {
+    pub(crate) const fn capacity(&self) -> NonZero<usize> {
         self.capacity
     }
 

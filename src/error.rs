@@ -20,6 +20,7 @@ pub(crate) struct MirrorDownloadRate {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub(crate) enum ProxyCacheError {
     Io(std::io::Error),
     Hyper(hyper::Error),

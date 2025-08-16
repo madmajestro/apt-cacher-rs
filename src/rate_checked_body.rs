@@ -48,6 +48,7 @@ impl RateChecker {
         }
     }
 
+    #[must_use]
     fn check_fail(&self) -> Option<(usize, NonZero<usize>)> {
         if self.buf.is_full() {
             let total = self.buf.sum();

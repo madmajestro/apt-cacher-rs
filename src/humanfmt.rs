@@ -9,7 +9,7 @@ impl std::fmt::Display for HumanFmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[inline]
         #[must_use]
-        fn precision(size: f64) -> usize {
+        const fn precision(size: f64) -> usize {
             if size > 100.0 {
                 0
             } else if size > 10.0 {

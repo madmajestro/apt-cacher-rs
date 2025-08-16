@@ -25,6 +25,7 @@ use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full
 const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
     format_description!("[day] [month repr:short] [year] [hour]:[minute]:[second]");
 
+#[must_use]
 pub(crate) async fn serve_web_interface(
     req: Request<hyper::body::Incoming>,
     database: Database,
@@ -230,6 +231,7 @@ async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheErro
     Ok(html_table_clients)
 }
 
+#[must_use]
 async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
     let start = Instant::now();
 
@@ -322,6 +324,7 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
     response
 }
 
+#[must_use]
 fn serve_logs() -> Response<ProxyCacheBody> {
     let mut buf = Vec::with_capacity(8192);
 

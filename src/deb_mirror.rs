@@ -29,6 +29,7 @@ pub(crate) struct OriginRef<'a> {
 }
 
 impl Origin {
+    #[must_use]
     pub(crate) fn from_path(path: &str, host: DomainName) -> Option<Self> {
         /* /debian/dists/sid/main/binary-amd64/Packages{,.diff,.gz,.xz} */
 
@@ -113,6 +114,7 @@ pub(crate) enum ResourceFile<'a> {
 /// Parses a request path into the mirror path and the filename.
 /// The directory names "dists" and "pool" are not supported as part
 /// of the mirror path.
+#[must_use]
 pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
     let path = path.trim_start_matches('/');
 

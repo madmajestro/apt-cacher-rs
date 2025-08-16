@@ -28,6 +28,7 @@ pub(crate) fn systemtime_to_http_datetime(time: SystemTime) -> String {
     odt.format(HTTP_DATE_FORMAT).expect("date should be valid")
 }
 
+#[must_use]
 pub(crate) fn http_datetime_to_systemtime(time: &str) -> Option<SystemTime> {
     OffsetDateTime::parse(time, &Rfc2822)
         .ok()
@@ -37,6 +38,7 @@ pub(crate) fn http_datetime_to_systemtime(time: &str) -> Option<SystemTime> {
 /// Computes the requested bytes range.
 /// Returns a tuple of the formatted Content-Range header,
 /// the start byte, and the total number of bytes on success.
+#[must_use]
 pub(crate) fn http_parse_range(
     range: Option<&str>,
     if_range: Option<&str>,
