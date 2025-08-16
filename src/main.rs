@@ -212,11 +212,7 @@ pub(crate) async fn request_with_retry(
     let mut sleep_curr = 1;
 
     loop {
-        let pre = tokio::time::Instant::now();
-
-        let parts_clone = parts.clone();
-        let body_clone = empty();
-        let req_clone = Request::from_parts(parts_clone, body_clone);
+        let req_clone = Request::from_parts(parts.clone(), empty());
 
         match client.request(req_clone).await {
             Ok(response) => return Ok(response),
@@ -231,11 +227,9 @@ pub(crate) async fn request_with_retry(
 
                 tries += 1;
 
-                tokio::time::sleep_until(pre + Duration::from_secs(sleep_curr)).await;
+                tokio::time::sleep(Duration::from_secs(sleep_curr)).await;
+                (sleep_curr, sleep_prev) = (sleep_curr + sleep_prev, sleep_curr);
 
-                let p = sleep_prev;
-                sleep_prev = sleep_curr;
-                sleep_curr += p;
                 continue;
             }
         }
