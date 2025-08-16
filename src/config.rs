@@ -34,7 +34,7 @@ macro_rules! nonzero {
 
 pub(crate) const DEFAULT_BIND_ADDRESS: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
 pub(crate) const DEFAULT_BIND_PORT: NonZero<u16> = nonzero!(3142);
-pub(crate) const DEFAULT_BUF_SIZE: usize = 32768;
+pub(crate) const DEFAULT_BUF_SIZE: usize = 32 * 1024;
 pub(crate) const DEFAULT_CACHE_DIR: &str = "/var/cache/apt-cacher-rs";
 pub(crate) const DEFAULT_CONFIGURATION_PATH: &str = "/etc/apt-cacher-rs/apt-cacher-rs.conf";
 pub(crate) const DEFAULT_DATABASE_PATH: &str = "/var/lib/apt-cacher-rs/apt-cacher-rs.db";

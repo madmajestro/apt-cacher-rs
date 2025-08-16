@@ -80,9 +80,7 @@ impl std::fmt::Display for ProxyCacheError {
             Self::ContentTooLarge(orig, datalen) => {
                 write!(
                     f,
-                    "Received data of {} larger than announced {:?}",
-                    HumanFmt::Size(*datalen),
-                    orig,
+                    "Received data of {datalen} bytes larger than announced {orig}"
                 )
             }
         }

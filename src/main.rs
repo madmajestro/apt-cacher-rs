@@ -1749,6 +1749,15 @@ impl ContentLength {
     }
 }
 
+impl std::fmt::Display for ContentLength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exact(size) => write!(f, "exact {size} bytes"),
+            Self::Unknown(limit) => write!(f, "up to {limit} bytes"),
+        }
+    }
+}
+
 #[must_use]
 #[expect(clippy::too_many_lines)]
 async fn serve_new_file(
