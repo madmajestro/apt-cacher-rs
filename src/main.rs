@@ -2452,6 +2452,7 @@ fn connect_response(
     Response::new(ProxyCacheBody::Boxed(empty()))
 }
 
+#[inline]
 async fn pre_process_client_request_wrapper(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
@@ -2469,19 +2470,19 @@ async fn pre_process_client_request(
 ) -> Response<ProxyCacheBody> {
     trace!("Incoming request: {req:?}");
 
-    {
-        let allowed_clients = global_config().allowed_clients.as_slice();
-        if !allowed_clients.is_empty()
-            && !allowed_clients
-                .iter()
-                .any(|ac| ac.contains(&client.ip().to_canonical()))
-        {
-            warn_once_or_info!("Unauthorized client {}", client.ip().to_canonical());
-            return quick_response(hyper::StatusCode::FORBIDDEN, "Unauthorized client");
-        }
-    }
-
     if Method::CONNECT == req.method() {
+        {
+            let allowed_proxy_clients = global_config().allowed_proxy_clients.as_slice();
+            if !allowed_proxy_clients.is_empty()
+                && !allowed_proxy_clients
+                    .iter()
+                    .any(|ac| ac.contains(&client.ip().to_canonical()))
+            {
+                warn_once_or_info!("Unauthorized proxy client {}", client.ip().to_canonical());
+                return quick_response(hyper::StatusCode::FORBIDDEN, "Unauthorized client");
+            }
+        }
+
         return connect_response(client, req);
     }
 
@@ -2492,8 +2493,37 @@ async fn pre_process_client_request(
 
     let requested_host = match req.uri().authority().map(hyper::http::uri::Authority::host) {
         Some(h) => h.to_owned(),
-        None => return serve_web_interface(req, state.database).await,
+        None => {
+            {
+                let allowed_webif_clients = global_config().allowed_webif_clients.as_slice();
+                if !allowed_webif_clients.is_empty()
+                    && !allowed_webif_clients
+                        .iter()
+                        .any(|ac| ac.contains(&client.ip().to_canonical()))
+                {
+                    warn_once_or_info!(
+                        "Unauthorized web-interface client {}",
+                        client.ip().to_canonical()
+                    );
+                    return quick_response(hyper::StatusCode::FORBIDDEN, "Unauthorized client");
+                }
+            }
+
+            return serve_web_interface(req, state.database).await;
+        }
     };
+
+    {
+        let allowed_proxy_clients = global_config().allowed_proxy_clients.as_slice();
+        if !allowed_proxy_clients.is_empty()
+            && !allowed_proxy_clients
+                .iter()
+                .any(|ac| ac.contains(&client.ip().to_canonical()))
+        {
+            warn_once_or_info!("Unauthorized proxy client {}", client.ip().to_canonical());
+            return quick_response(hyper::StatusCode::FORBIDDEN, "Unauthorized client");
+        }
+    }
 
     let requested_host = match DomainName::new(requested_host) {
         Ok(d) => d,

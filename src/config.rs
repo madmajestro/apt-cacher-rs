@@ -99,6 +99,7 @@ impl<'de> Deserialize<'de> for ConfigDomainName {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, sqlx::Type)]
+#[repr(transparent)]
 #[sqlx(transparent)]
 pub(crate) struct DomainName(String);
 
@@ -264,9 +265,13 @@ pub(crate) struct Config {
     #[serde(default = "default_allowed_mirrors")]
     pub(crate) allowed_mirrors: Vec<ConfigDomainName>,
 
-    /// List of allowed clients.
+    /// List of clients permitted to use the proxy.
     #[serde(default = "default_allowed_clients")]
-    pub(crate) allowed_clients: Vec<IpNetOrAddr>,
+    pub(crate) allowed_proxy_clients: Vec<IpNetOrAddr>,
+
+    // List of clients permitted to use the web-interface.
+    #[serde(default = "default_allowed_clients")]
+    pub(crate) allowed_webif_clients: Vec<IpNetOrAddr>,
 
     /// Whether https tunneling is enabled.
     #[serde(default = "default_https_tunnel_enabled")]
@@ -653,7 +658,8 @@ impl Config {
             aliases: Vec::new(),
             allowed_mirrors: Vec::new(),
             disk_quota: None,
-            allowed_clients: Vec::new(),
+            allowed_proxy_clients: Vec::new(),
+            allowed_webif_clients: Vec::new(),
             https_tunnel_enabled: true,
             https_tunnel_allowed_ports: vec![nonzero!(443)],
             https_tunnel_allowed_mirrors: Vec::new(),
