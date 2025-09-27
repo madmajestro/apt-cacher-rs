@@ -2491,9 +2491,10 @@ async fn pre_process_client_request(
         return quick_response(hyper::StatusCode::BAD_REQUEST, "Method not supported");
     }
 
-    let requested_host = match req.uri().authority().map(hyper::http::uri::Authority::host) {
-        Some(h) => h.to_owned(),
-        None => {
+    let requested_host =
+        if let Some(h) = req.uri().authority().map(hyper::http::uri::Authority::host) {
+            h.to_owned()
+        } else {
             {
                 let allowed_webif_clients = global_config().allowed_webif_clients.as_slice();
                 if !allowed_webif_clients.is_empty()
@@ -2510,8 +2511,7 @@ async fn pre_process_client_request(
             }
 
             return serve_web_interface(req, state.database).await;
-        }
-    };
+        };
 
     {
         let allowed_proxy_clients = global_config().allowed_proxy_clients.as_slice();
