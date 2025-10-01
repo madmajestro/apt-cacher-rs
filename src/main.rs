@@ -2470,9 +2470,11 @@ async fn pre_process_client_request(
 ) -> Response<ProxyCacheBody> {
     trace!("Incoming request: {req:?}");
 
+    let gc = global_config();
+
     if Method::CONNECT == req.method() {
         {
-            let allowed_proxy_clients = global_config().allowed_proxy_clients.as_slice();
+            let allowed_proxy_clients = gc.allowed_proxy_clients.as_slice();
             if !allowed_proxy_clients.is_empty()
                 && !allowed_proxy_clients
                     .iter()
@@ -2496,7 +2498,10 @@ async fn pre_process_client_request(
             h.to_owned()
         } else {
             {
-                let allowed_webif_clients = global_config().allowed_webif_clients.as_slice();
+                let allowed_webif_clients = gc
+                    .allowed_webif_clients
+                    .as_ref()
+                    .unwrap_or(&gc.allowed_proxy_clients);
                 if !allowed_webif_clients.is_empty()
                     && !allowed_webif_clients
                         .iter()
@@ -2514,7 +2519,7 @@ async fn pre_process_client_request(
         };
 
     {
-        let allowed_proxy_clients = global_config().allowed_proxy_clients.as_slice();
+        let allowed_proxy_clients = gc.allowed_proxy_clients.as_slice();
         if !allowed_proxy_clients.is_empty()
             && !allowed_proxy_clients
                 .iter()
@@ -2538,7 +2543,7 @@ async fn pre_process_client_request(
         return quick_response(hyper::StatusCode::BAD_REQUEST, "Unauthorized host");
     }
 
-    let aliased_host = global_config()
+    let aliased_host = gc
         .aliases
         .iter()
         .find(|alias| alias.aliases.binary_search(&requested_host).is_ok())

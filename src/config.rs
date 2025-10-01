@@ -266,12 +266,15 @@ pub(crate) struct Config {
     pub(crate) allowed_mirrors: Vec<ConfigDomainName>,
 
     /// List of clients permitted to use the proxy.
-    #[serde(default = "default_allowed_clients")]
+    /// Empty means all clients are allowed.
+    #[serde(default = "default_allowed_proxy_clients")]
     pub(crate) allowed_proxy_clients: Vec<IpNetOrAddr>,
 
-    // List of clients permitted to use the web-interface.
-    #[serde(default = "default_allowed_clients")]
-    pub(crate) allowed_webif_clients: Vec<IpNetOrAddr>,
+    /// List of clients permitted to use the web-interface.
+    /// Empty means all clients are allowed.
+    /// None means setting is inherited from `allowed_proxy_clients`.
+    #[serde(default = "default_allowed_webif_clients")]
+    pub(crate) allowed_webif_clients: Option<Vec<IpNetOrAddr>>,
 
     /// Whether https tunneling is enabled.
     #[serde(default = "default_https_tunnel_enabled")]
@@ -500,8 +503,12 @@ const fn default_aliases() -> Vec<Alias> {
     Vec::new()
 }
 
-const fn default_allowed_clients() -> Vec<IpNetOrAddr> {
+const fn default_allowed_proxy_clients() -> Vec<IpNetOrAddr> {
     Vec::new()
+}
+
+const fn default_allowed_webif_clients() -> Option<Vec<IpNetOrAddr>> {
+    None
 }
 
 const fn default_allowed_mirrors() -> Vec<ConfigDomainName> {
@@ -659,7 +666,7 @@ impl Config {
             allowed_mirrors: Vec::new(),
             disk_quota: None,
             allowed_proxy_clients: Vec::new(),
-            allowed_webif_clients: Vec::new(),
+            allowed_webif_clients: None,
             https_tunnel_enabled: true,
             https_tunnel_allowed_ports: vec![nonzero!(443)],
             https_tunnel_allowed_mirrors: Vec::new(),
