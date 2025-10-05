@@ -2427,9 +2427,12 @@ fn connect_response(
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 if let Err(err) = tunnel(client, upgraded, &host, port).await {
-                    if err.kind() == ErrorKind::NotConnected
-                        || err.kind() == ErrorKind::ConnectionReset
-                    {
+                    if err.kind() == ErrorKind::NotConnected {
+                        info!(
+                            "Error tunneling connection for client {} to {host}:{port}:  {err}",
+                            client.ip().to_canonical()
+                        );
+                    } else if err.kind() == ErrorKind::ConnectionReset {
                         warn!(
                             "Error tunneling connection for client {} to {host}:{port}:  {err}",
                             client.ip().to_canonical()
