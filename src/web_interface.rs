@@ -20,6 +20,7 @@ use crate::APP_VERSION;
 use crate::HumanFmt;
 use crate::ProxyCacheBody;
 use crate::RUNTIMEDETAILS;
+use crate::UNCACHEABLES;
 use crate::global_config;
 use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full, quick_response};
 
@@ -234,6 +235,25 @@ async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheErro
     Ok(html_table_clients)
 }
 
+async fn build_uncacheable_table() -> Result<Table, ProxyCacheError> {
+    let mut html_table_uncacheables =
+        Table::new().with_header_row(&["Requested Host", "Requested Path"]);
+
+    {
+        let uncacheables = UNCACHEABLES
+            .get()
+            .expect("Initialized in main()")
+            .lock()
+            .expect("Other users should not panic");
+
+        for (host, path) in uncacheables.iter() {
+            html_table_uncacheables.add_body_row([&format!("{host}"), path]);
+        }
+    }
+
+    Ok(html_table_uncacheables)
+}
+
 #[must_use]
 async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
     let start = Instant::now();
@@ -253,6 +273,13 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
     };
 
     let Ok(html_table_clients) = build_client_table(&database).await else {
+        return quick_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Local Webinterface failure",
+        );
+    };
+
+    let Ok(html_table_uncacheables) = build_uncacheable_table().await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
@@ -308,6 +335,12 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
                 .with_header_attr(2, "Clients", [("id", "clients-head")])
                 .with_paragraph("List of clients:")
                 .with_table(html_table_clients),
+        )
+        .with_container(
+            Container::new(ContainerType::Div)
+                .with_header_attr(2, "Uncacheables", [("id", "clients-head")])
+                .with_paragraph("List of most recent files unable to cache:")
+                .with_table(html_table_uncacheables),
         )
         .with_container(
             Container::new(ContainerType::Footer).with_paragraph(format!("<hr>All dates are in UTC.   --   Generated in {}.", HumanFmt::Time(start.elapsed()))),

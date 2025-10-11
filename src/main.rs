@@ -130,6 +130,7 @@ use crate::http_range::http_datetime_to_systemtime;
 use crate::http_range::systemtime_to_http_datetime;
 use crate::humanfmt::HumanFmt;
 use crate::logstore::LogStore;
+use crate::ringbuffer::RingBuffer;
 use crate::task_cache_scan::task_cache_scan;
 use crate::task_cleanup::task_cleanup;
 use crate::task_setup::task_setup;
@@ -2789,132 +2790,131 @@ async fn pre_process_client_request(
         }
     }
 
-    match req.method() {
-        /* Simple proxy (without any caching) */
-        &Method::GET => {
-            /*
-             * http://deb.debian.org/debian-debug/dists/sid-debug/main/binary-i386/Packages.diff/T-2024-09-24-2005.48-F-2024-09-23-2021.00.gz
-             * http://deb.debian.org/debian/dists/unstable/main/i18n/Translation-en.diff/T-2024-10-03-0804.49-F-2024-10-02-2011.04.gz
-             * http://deb.debian.org/debian/dists/sid/main/source/Sources.diff/T-2024-10-03-1409.04-F-2024-10-03-1409.04.gz
-             */
-            fn ignore_uncached_path(uri_path: &str) -> bool {
-                uri_path.contains("/by-hash/SHA256/")
-                    || uri_path.contains("/Packages.diff/T-")
-                    || uri_path.contains("/Translation-en.diff/T-")
-                    || uri_path.contains("/Sources.diff/T-")
-            }
+    assert_eq!(req.method(), Method::GET, "Filtered at function start");
 
-            if ignore_uncached_path(requested_path) {
-                info!("Proxying (without caching) request {}", req.uri());
-            } else {
-                warn_once_or_info!("Proxying (without caching) request {}", req.uri());
-            }
+    /*
+     * Simple proxy (without any caching)
+     *
+     * http://deb.debian.org/debian-debug/dists/sid-debug/main/binary-i386/Packages.diff/T-2024-09-24-2005.48-F-2024-09-23-2021.00.gz
+     * http://deb.debian.org/debian/dists/unstable/main/i18n/Translation-en.diff/T-2024-10-03-0804.49-F-2024-10-02-2011.04.gz
+     * http://deb.debian.org/debian/dists/sid/main/source/Sources.diff/T-2024-10-03-1409.04-F-2024-10-03-1409.04.gz
+     */
+    #[expect(clippy::items_after_statements)]
+    fn ignore_uncached_path(uri_path: &str) -> bool {
+        uri_path.contains("/by-hash/SHA256/")
+            || uri_path.contains("/Packages.diff/T-")
+            || uri_path.contains("/Translation-en.diff/T-")
+            || uri_path.contains("/Sources.diff/T-")
+    }
 
-            let (mut parts, body) = req.into_parts();
-            parts.headers.insert(
-                USER_AGENT,
-                APP_USER_AGENT.parse().expect("app user agent is ASCII"),
-            );
+    if ignore_uncached_path(requested_path) {
+        info!("Proxying (without caching) request {}", req.uri());
+    } else {
+        warn_once_or_info!("Proxying (without caching) request {}", req.uri());
 
-            let mut parts_cloned = parts.clone();
-            let is_empty_body = body.size_hint().exact() == Some(0);
+        let mut uncacheables = UNCACHEABLES
+            .get()
+            .expect("Initialized in main()")
+            .lock()
+            .expect("Other users should not panic");
 
-            let body = body.map_err(ProxyCacheError::Hyper).boxed();
-            // TODO: tweak http version?
-            let fwd_request = Request::from_parts(parts, body);
+        // always delete to keep recent entries fresh
+        uncacheables.retain(|(host, path)| *host != requested_host || path != requested_path);
 
-            trace!("Forwarded request: {fwd_request:?}");
+        uncacheables.push((requested_host.clone(), requested_path.to_owned()));
+    }
 
-            let fwd_response = match request_with_retry(&state.https_client, fwd_request).await {
-                Ok(r) => r,
-                Err(err) => {
-                    warn!("Proxy request to host {requested_host} failed:  {err}");
-                    return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Proxy request failed");
+    let (mut parts, body) = req.into_parts();
+    parts.headers.insert(
+        USER_AGENT,
+        APP_USER_AGENT.parse().expect("app user agent is ASCII"),
+    );
+
+    let mut parts_cloned = parts.clone();
+    let is_empty_body = body.size_hint().exact() == Some(0);
+
+    let body = body.map_err(ProxyCacheError::Hyper).boxed();
+    // TODO: tweak http version?
+    let fwd_request = Request::from_parts(parts, body);
+
+    trace!("Forwarded request: {fwd_request:?}");
+
+    let fwd_response = match request_with_retry(&state.https_client, fwd_request).await {
+        Ok(r) => r,
+        Err(err) => {
+            warn!("Proxy request to host {requested_host} failed:  {err}");
+            return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Proxy request failed");
+        }
+    };
+
+    trace!("Forwarded response: {fwd_response:?}");
+
+    if (fwd_response.status().is_success() || fwd_response.status().is_redirection())
+        && let Some(origin) = Origin::from_path(parts_cloned.uri.path(), requested_host.clone())
+    {
+        debug!("Extracted origin: {origin:?}");
+
+        match origin.architecture.as_str() {
+            // TODO: cache some of them?
+            "dep11" | "i18n" | "source" => (),
+            _ => {
+                if let Err(err) = state.database.add_origin(&origin.as_ref()).await {
+                    error!("Error registering origin {origin:?}:  {err}");
                 }
-            };
+            }
+        }
+    }
 
-            trace!("Forwarded response: {fwd_response:?}");
+    if fwd_response.status() == StatusCode::MOVED_PERMANENTLY
+        && let Some(moved_uri) = fwd_response
+            .headers()
+            .get(LOCATION)
+            .and_then(|lc| lc.to_str().ok())
+            .and_then(|lc_str| lc_str.parse::<hyper::Uri>().ok())
+    {
+        debug!(
+            "Requested URI: {}, Moved URI: {moved_uri}, Body is-empty: {}",
+            parts_cloned.uri, is_empty_body
+        );
 
-            if (fwd_response.status().is_success() || fwd_response.status().is_redirection())
-                && let Some(origin) =
-                    Origin::from_path(parts_cloned.uri.path(), requested_host.clone())
-            {
-                debug!("Extracted origin: {origin:?}");
+        if moved_uri.host().is_some_and(is_host_allowed) {
+            parts_cloned.uri = moved_uri;
+            let redirected_request = Request::from_parts(parts_cloned, empty());
 
-                match origin.architecture.as_str() {
-                    // TODO: cache some of them?
-                    "dep11" | "i18n" | "source" => (),
-                    _ => {
-                        if let Err(err) = state.database.add_origin(&origin.as_ref()).await {
-                            error!("Error registering origin {origin:?}:  {err}");
-                        }
+            trace!("Redirected request: {redirected_request:?}");
+
+            let redirected_response =
+                match request_with_retry(&state.https_client, redirected_request).await {
+                    Ok(r) => r,
+                    Err(err) => {
+                        warn!("Redirected proxy request to host {requested_host} failed:  {err}");
+                        return quick_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Proxy request failed",
+                        );
                     }
-                }
-            }
+                };
 
-            if fwd_response.status() == StatusCode::MOVED_PERMANENTLY
-                && let Some(moved_uri) = fwd_response
-                    .headers()
-                    .get(LOCATION)
-                    .and_then(|lc| lc.to_str().ok())
-                    .and_then(|lc_str| lc_str.parse::<hyper::Uri>().ok())
-            {
-                debug!(
-                    "Requested URI: {}, Moved URI: {moved_uri}, Body is-empty: {}",
-                    parts_cloned.uri, is_empty_body
-                );
+            trace!("Redirected response: {redirected_response:?}");
 
-                if moved_uri.host().is_some_and(is_host_allowed) {
-                    parts_cloned.uri = moved_uri;
-                    let redirected_request = Request::from_parts(parts_cloned, empty());
+            let (parts, body) = redirected_response.into_parts();
 
-                    trace!("Redirected request: {redirected_request:?}");
+            let body = ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
 
-                    let redirected_response = match request_with_retry(
-                        &state.https_client,
-                        redirected_request,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(err) => {
-                            warn!(
-                                "Redirected proxy request to host {requested_host} failed:  {err}"
-                            );
-                            return quick_response(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "Proxy request failed",
-                            );
-                        }
-                    };
-
-                    trace!("Redirected response: {redirected_response:?}");
-
-                    let (parts, body) = redirected_response.into_parts();
-
-                    let body =
-                        ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)));
-
-                    let response = Response::from_parts(parts, body);
-
-                    trace!("Outgoing response: {response:?}");
-
-                    return response;
-                }
-            }
-
-            let response = fwd_response.map(|body| {
-                ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper)))
-            });
+            let response = Response::from_parts(parts, body);
 
             trace!("Outgoing response: {response:?}");
 
-            response
+            return response;
         }
-
-        /* Return the 404 Not Found for other routes. */
-        _ => quick_response(StatusCode::NOT_FOUND, "Resource not found"),
     }
+
+    let response = fwd_response
+        .map(|body| ProxyCacheBody::Boxed(BoxBody::new(body.map_err(ProxyCacheError::Hyper))));
+
+    trace!("Outgoing response: {response:?}");
+
+    response
 }
 
 #[must_use]
@@ -3288,6 +3288,7 @@ struct RuntimeDetails {
 
 static RUNTIMEDETAILS: OnceLock<RuntimeDetails> = OnceLock::new();
 static LOGSTORE: OnceLock<LogStore> = OnceLock::new();
+static UNCACHEABLES: OnceLock<std::sync::Mutex<RingBuffer<(DomainName, String)>>> = OnceLock::new();
 
 #[must_use]
 #[inline]
@@ -3334,6 +3335,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     LOGSTORE
         .set(LogStore::new(config_logstore_capacity))
+        .expect("Initial set in main() should succeed");
+
+    UNCACHEABLES
+        .set(std::sync::Mutex::new(RingBuffer::new(nonzero!(20))))
         .expect("Initial set in main() should succeed");
 
     CombinedLogger::init(vec![

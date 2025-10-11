@@ -53,6 +53,10 @@ impl<T> RingBuffer<T> {
     pub(crate) const fn capacity(&self) -> NonZero<usize> {
         self.capacity
     }
+
+    pub(crate) fn retain(&mut self, f: impl FnMut(&T) -> bool) {
+        self.inner.retain(f);
+    }
 }
 
 #[derive(Debug)]
