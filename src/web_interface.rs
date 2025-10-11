@@ -235,7 +235,7 @@ async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheErro
     Ok(html_table_clients)
 }
 
-async fn build_uncacheable_table() -> Result<Table, ProxyCacheError> {
+fn build_uncacheable_table() -> Table {
     let mut html_table_uncacheables =
         Table::new().with_header_row(&["Requested Host", "Requested Path"]);
 
@@ -251,7 +251,7 @@ async fn build_uncacheable_table() -> Result<Table, ProxyCacheError> {
         }
     }
 
-    Ok(html_table_uncacheables)
+    html_table_uncacheables
 }
 
 #[must_use]
@@ -279,12 +279,7 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
         );
     };
 
-    let Ok(html_table_uncacheables) = build_uncacheable_table().await else {
-        return quick_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Local Webinterface failure",
-        );
-    };
+    let html_table_uncacheables = build_uncacheable_table();
 
     let rd = RUNTIMEDETAILS.get().expect("Should be set");
     let database_size_fmt = match tokio::fs::metadata(&rd.config.database_path).await {
