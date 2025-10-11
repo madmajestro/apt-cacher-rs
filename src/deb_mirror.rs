@@ -115,14 +115,17 @@ pub(crate) enum ResourceFile<'a> {
 }
 
 /// Parses a request path into the mirror path and the filename.
-/// The directory names "dists" and "pool" are not supported as part
+/// The directory names "dists" and "pool" should be avoided as part
 /// of the mirror path.
 #[must_use]
 pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
     let path = path.trim_start_matches('/');
 
-    /* debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb */
-    if let Some((mirror_path, pool_path)) = path.split_once("/pool/") {
+    /*
+     * debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb
+     * debian-security/pool/updates/main/c/chromium/chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb
+     */
+    if let Some((mirror_path, pool_path)) = path.rsplit_once("/pool/") {
         let mut parts = pool_path.rsplit('/');
 
         let filename = parts.next()?;
@@ -136,7 +139,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
 
         let _component = parts.next()?;
 
-        if parts.next().is_some() {
+        if parts.next().is_some_and(|s| s != "updates") {
             return None;
         }
 
@@ -147,7 +150,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
      * debian/dists/sid/InRelease
      * debs/dists/vscodium/main/binary-amd64/Packages.gz
      */
-    if let Some((mirror_path, dists_path)) = path.split_once("/dists/") {
+    if let Some((mirror_path, dists_path)) = path.rsplit_once("/dists/") {
         let mut parts = dists_path.rsplit('/');
 
         let filename = parts.next()?;
@@ -392,13 +395,25 @@ mod tests {
         );
 
         assert_eq!(
-            parse_request_path("/unstable/dists/llvm-toolchain/main/binary-amd64/Packages.gz"),
+            parse_request_path(
+                "/pool/dists/unstable/dists/llvm-toolchain/main/binary-amd64/Packages.gz"
+            ),
             Some(ResourceFile::Package(
-                "unstable",
+                "pool/dists/unstable",
                 "llvm-toolchain",
                 "main",
                 "binary-amd64",
                 "Packages.gz"
+            ))
+        );
+
+        assert_eq!(
+            parse_request_path(
+                "/pool/dists/debian-security/pool/updates/main/c/chromium/chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb"
+            ),
+            Some(ResourceFile::Pool(
+                "pool/dists/debian-security",
+                "chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb"
             ))
         );
 
