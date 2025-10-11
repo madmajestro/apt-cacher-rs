@@ -8,7 +8,7 @@ pub(crate) struct Mirror {
 
 impl std::fmt::Display for Mirror {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}/{}", self.host, self.path))
+        write!(f, "{}/{}", self.host, self.path)
     }
 }
 
@@ -62,12 +62,13 @@ impl Origin {
     }
 
     #[must_use]
-    pub(crate) fn as_ref(&self) -> OriginRef<'_> {
+    #[inline]
+    pub(crate) const fn as_ref(&self) -> OriginRef<'_> {
         OriginRef {
             mirror: &self.mirror,
-            distribution: &self.distribution,
-            component: &self.component,
-            architecture: &self.architecture,
+            distribution: self.distribution.as_str(),
+            component: self.component.as_str(),
+            architecture: self.architecture.as_str(),
         }
     }
 }
@@ -78,6 +79,7 @@ pub(crate) trait UriFormat {
 }
 
 impl UriFormat for Origin {
+    #[inline]
     fn uri(&self) -> String {
         /* deb.debian.org/debian/dists/sid/main/binary-amd64/Packages */
         format!(
@@ -92,6 +94,7 @@ impl UriFormat for Origin {
 }
 
 impl UriFormat for &crate::database::OriginEntry {
+    #[inline]
     fn uri(&self) -> String {
         /* deb.debian.org/debian/dists/sid/main/binary-amd64/Packages */
         format!(

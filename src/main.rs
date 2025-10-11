@@ -38,7 +38,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::pin::pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 #[cfg(not(feature = "mmap"))]
@@ -2411,7 +2410,7 @@ fn connect_response(
             .is_err()
     {
         info!(
-            "Rejecting https tunnel request for client {} due to not permitted host {}",
+            "Rejecting https tunnel request for client {} due to not permitted host `{}`",
             client.ip().to_canonical(),
             host
         );
@@ -3291,6 +3290,7 @@ static RUNTIMEDETAILS: OnceLock<RuntimeDetails> = OnceLock::new();
 static LOGSTORE: OnceLock<LogStore> = OnceLock::new();
 
 #[must_use]
+#[inline]
 fn global_config() -> &'static Config {
     &RUNTIMEDETAILS
         .get()
@@ -3313,7 +3313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config,
             cache_size: std::sync::Mutex::new(0),
         })
-        .expect("Initial set should succeed");
+        .expect("Initial set in main() should succeed");
 
     let output_log_config = if args.skip_log_timestamp {
         ConfigBuilder::new()
@@ -3334,7 +3334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     LOGSTORE
         .set(LogStore::new(config_logstore_capacity))
-        .expect("Initial set should succeed");
+        .expect("Initial set in main() should succeed");
 
     CombinedLogger::init(vec![
         TermLogger::new(

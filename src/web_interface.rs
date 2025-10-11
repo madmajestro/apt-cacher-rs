@@ -6,6 +6,7 @@ use build_html::Html;
 use build_html::HtmlContainer;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
+use hyper::body::Incoming;
 use hyper::{
     Request, Response, StatusCode,
     header::{HeaderValue, SERVER},
@@ -27,7 +28,7 @@ const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
 
 #[must_use]
 pub(crate) async fn serve_web_interface(
-    req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
     database: Database,
 ) -> Response<ProxyCacheBody> {
     let location = req.uri().path();
@@ -40,7 +41,7 @@ pub(crate) async fn serve_web_interface(
             debug!("Invalid local web interface request: {req:?}");
 
             quick_response(
-                hyper::StatusCode::BAD_REQUEST,
+                StatusCode::BAD_REQUEST,
                 "Local interface resource not available",
             )
         }
