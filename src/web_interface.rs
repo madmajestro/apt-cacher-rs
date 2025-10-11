@@ -85,13 +85,14 @@ async fn build_mirror_table(database: &Database) -> Result<Table, ProxyCacheErro
         "File Count",
     ]);
 
-    let mirrors = match database.get_mirrors_with_stats().await {
+    let mut mirrors = match database.get_mirrors_with_stats().await {
         Ok(m) => m,
         Err(err) => {
             error!("Failed to query mirrors:  {err}");
             return Err(ProxyCacheError::Sqlx(err));
         }
     };
+    mirrors.sort_unstable_by_key(|mirror| -mirror.last_seen);
 
     let cache_path = &global_config().cache_directory;
 
@@ -187,13 +188,14 @@ async fn build_origin_table(database: &Database) -> Result<Table, ProxyCacheErro
         "Last Seen",
     ]);
 
-    let origins = match database.get_origins().await {
+    let mut origins = match database.get_origins().await {
         Ok(o) => o,
         Err(err) => {
             error!("Failed to query origins:  {err}");
             return Err(ProxyCacheError::Sqlx(err));
         }
     };
+    origins.sort_unstable_by_key(|origin| -origin.last_seen);
 
     for origin in origins {
         let last_seen = time::OffsetDateTime::from_unix_timestamp(origin.last_seen)
