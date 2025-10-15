@@ -24,6 +24,7 @@ mod web_interface;
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Debug;
@@ -1104,15 +1105,13 @@ impl ActiveDownloads {
         let key = ActiveDownloadKey { mirror, debname };
         let mut ads = self.inner.lock().expect("other users should not panic");
 
-        // TODO: use try_insert() once stable: https://github.com/rust-lang/rust/issues/82766
-        if let Some(status) = ads.get(&key) {
-            (true, Arc::clone(status))
-        } else {
-            let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init));
-            let was_present = ads.insert(key, Arc::clone(&status));
-            drop(ads);
-            assert!(was_present.is_none());
-            (false, status)
+        match ads.entry(key) {
+            Entry::Occupied(occupied_entry) => (true, Arc::clone(occupied_entry.get())),
+            Entry::Vacant(vacant_entry) => {
+                let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init));
+                vacant_entry.insert(Arc::clone(&status));
+                (false, status)
+            }
         }
     }
 
@@ -1133,7 +1132,7 @@ impl ActiveDownloads {
         tokio::task::block_in_place(move || {
             let mut sum = 0;
 
-            for (_key, download) in ads.iter() {
+            for download in ads.values() {
                 let d = download.blocking_lock();
                 if let ActiveDownloadStatus::Download(_, size, _) = &*d {
                     sum += size.upper().get();
@@ -1151,7 +1150,7 @@ impl ActiveDownloads {
         tokio::task::block_in_place(move || {
             let mut count = 0;
 
-            for (_key, download) in ads.iter() {
+            for download in ads.values() {
                 let d = download.blocking_lock();
                 match &*d {
                     ActiveDownloadStatus::Init
