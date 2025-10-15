@@ -1768,7 +1768,7 @@ async fn serve_new_file(
     state: State,
 ) -> Response<ProxyCacheBody> {
     // TODO: upstream constant
-    const PROXY_CONNECT: HeaderName = HeaderName::from_static("proxy-connext");
+    const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
     let (is_volatile, prev_file_size) =
         if let CacheFileStat::Volatile((file, file_path, _local_modification_time)) = &cfstate {
@@ -1793,7 +1793,7 @@ async fn serve_new_file(
     for (name, value) in req.headers() {
         match name {
             &USER_AGENT | &RANGE | &IF_RANGE | &HOST | &ACCEPT => (),
-            n if n == PROXY_CONNECT => (),
+            n if n == PROXY_CONNECTION => (),
             /*
              * TODO:
              * Ignore client cache settings for now.
