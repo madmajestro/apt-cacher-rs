@@ -115,8 +115,9 @@ pub(crate) enum ResourceFile<'a> {
 }
 
 /// Parses a request path into the mirror path and the filename.
-/// The directory names "dists" and "pool" should be avoided as part
-/// of the mirror path.
+///
+/// The directory name "pool" is not supported as part of the mirror path.
+/// The directory name "dists" should be avoided as part of the mirror path.
 #[must_use]
 pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
     let path = path.trim_start_matches('/');
@@ -125,7 +126,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
      * debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb
      * debian-security/pool/updates/main/c/chromium/chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb
      */
-    if let Some((mirror_path, pool_path)) = path.rsplit_once("/pool/") {
+    if let Some((mirror_path, pool_path)) = path.split_once("/pool/") {
         let mut parts = pool_path.rsplit('/');
 
         let filename = parts.next()?;
@@ -139,7 +140,10 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
 
         let _component = parts.next()?;
 
-        if parts.next().is_some_and(|s| s != "updates") {
+        if parts
+            .next()
+            .is_some_and(|s| s != "updates" || parts.next().is_some())
+        {
             return None;
         }
 
