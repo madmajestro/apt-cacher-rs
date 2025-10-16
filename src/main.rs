@@ -1978,7 +1978,7 @@ async fn serve_new_file(
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
             *status.lock().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
             // ignore if there are no receivers
-            let _ignore = init_tx.send(());
+            init_tx.send_replace(());
 
             state
                 .active_downloads
@@ -2193,7 +2193,7 @@ async fn serve_new_file(
 
     *status.lock().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
     // ignore if there are no receivers
-    let _ignore = init_tx.send(());
+    init_tx.send_replace(());
 
     let cd = conn_details.clone();
     let st = Arc::clone(&status);
