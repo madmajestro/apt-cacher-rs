@@ -953,11 +953,11 @@ async fn serve_volatile_file(
     file_path: &Path,
     state: State,
 ) -> Response<ProxyCacheBody> {
-    let (is_downloading, status) = state
+    let (init_tx, status) = state
         .active_downloads
         .insert(conn_details.mirror.clone(), conn_details.debname.clone());
 
-    if is_downloading {
+    let Some(init_tx) = init_tx else {
         info!(
             "Serving file {} already in download from mirror {} for client {}...",
             conn_details.debname,
@@ -965,7 +965,7 @@ async fn serve_volatile_file(
             conn_details.client.ip().to_canonical()
         );
         return serve_downloading_file(conn_details, req, state.database, status).await;
-    }
+    };
 
     let local_modification_time = match file.metadata().await {
         Ok(data) => data
@@ -997,6 +997,7 @@ async fn serve_volatile_file(
     serve_new_file(
         conn_details,
         status,
+        init_tx,
         req,
         CacheFileStat::Volatile((file, file_path, local_modification_time)),
         state,
@@ -1067,7 +1068,7 @@ impl<'a> Borrow<dyn AsActiveDownloadKeyRef + 'a> for ActiveDownloadKey {
 
 #[derive(Debug)]
 enum ActiveDownloadStatus {
-    Init,
+    Init(tokio::sync::watch::Receiver<()>),
     Download(PathBuf, ContentLength, tokio::sync::watch::Receiver<u32>),
     Finished(PathBuf),
     Aborted(ProxyCacheError),
@@ -1101,16 +1102,20 @@ impl ActiveDownloads {
         &self,
         mirror: Mirror,
         debname: String,
-    ) -> (bool, Arc<tokio::sync::Mutex<ActiveDownloadStatus>>) {
+    ) -> (
+        Option<tokio::sync::watch::Sender<()>>,
+        Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    ) {
         let key = ActiveDownloadKey { mirror, debname };
         let mut ads = self.inner.lock().expect("other users should not panic");
 
         match ads.entry(key) {
-            Entry::Occupied(occupied_entry) => (true, Arc::clone(occupied_entry.get())),
+            Entry::Occupied(occupied_entry) => (None, Arc::clone(occupied_entry.get())),
             Entry::Vacant(vacant_entry) => {
-                let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init));
+                let (tx, rx) = tokio::sync::watch::channel(());
+                let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init(rx)));
                 vacant_entry.insert(Arc::clone(&status));
-                (false, status)
+                (Some(tx), status)
             }
         }
     }
@@ -1153,7 +1158,7 @@ impl ActiveDownloads {
             for download in ads.values() {
                 let d = download.blocking_lock();
                 match &*d {
-                    ActiveDownloadStatus::Init
+                    ActiveDownloadStatus::Init(_)
                     | ActiveDownloadStatus::Download(_, _, _)
                     | ActiveDownloadStatus::Aborted(_) => {
                         count += 1;
@@ -1522,7 +1527,7 @@ async fn serve_unfinished_file(
 
                         return;
                     }
-                    ActiveDownloadStatus::Init | ActiveDownloadStatus::Download(..) => {
+                    ActiveDownloadStatus::Init(_) | ActiveDownloadStatus::Download(..) => {
                         error!(
                             "Invalid download state {:?} of file `{}`, cancelling stream",
                             *st,
@@ -1630,7 +1635,6 @@ async fn serve_downloading_file(
     database: Database,
     status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
 ) -> Response<ProxyCacheBody> {
-    let mut slept_once = false;
     let mut not_found_once = false;
 
     loop {
@@ -1641,18 +1645,13 @@ async fn serve_downloading_file(
                 drop(st);
                 return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Download Aborted");
             }
-            ActiveDownloadStatus::Init => {
+            ActiveDownloadStatus::Init(init_rx) => {
+                let mut init_rx = init_rx.clone();
                 drop(st);
-                if slept_once {
-                    // TODO: fix on slow upstream connection; mayge store an Instant in Init?
-                    error!("Download did not leave Init state");
-                    return quick_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Download not started",
-                    );
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                slept_once = true;
+
+                // Either the state changed manually by the downloading task,
+                // or the downloading task just dropped the sender.
+                let _ignore = init_rx.changed().await;
             }
             ActiveDownloadStatus::Finished(path) => {
                 let file = match tokio::fs::File::open(&path).await {
@@ -1762,6 +1761,7 @@ impl std::fmt::Display for ContentLength {
 async fn serve_new_file(
     conn_details: ConnectionDetails,
     status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    init_tx: tokio::sync::watch::Sender<()>,
     req: Request<hyper::body::Incoming>,
     cfstate: CacheFileStat<'_>,
     state: State,
@@ -1976,6 +1976,10 @@ async fn serve_new_file(
 
     if let CacheFileStat::Volatile((file, file_path, local_modification_time)) = cfstate {
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
+            *status.lock().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
+            // ignore if there are no receivers
+            let _ignore = init_tx.send(());
+
             state
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
@@ -2188,6 +2192,8 @@ async fn serve_new_file(
     let (tx, rx) = tokio::sync::watch::channel(0);
 
     *status.lock().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
+    // ignore if there are no receivers
+    let _ignore = init_tx.send(());
 
     let cd = conn_details.clone();
     let st = Arc::clone(&status);
@@ -2207,7 +2213,7 @@ async fn serve_new_file(
 
         {
             let ads = st.lock().await;
-            assert!(!matches!(*ads, ActiveDownloadStatus::Init));
+            assert!(!matches!(*ads, ActiveDownloadStatus::Init(_)));
             if !matches!(*(ads), ActiveDownloadStatus::Finished(_)) {
                 let mut mg_cache_size = RUNTIMEDETAILS
                     .get()
@@ -2326,11 +2332,21 @@ async fn process_cache_request(
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let (is_downloading, status) = state
+            let (init_tx, status) = state
                 .active_downloads
                 .insert(conn_details.mirror.clone(), conn_details.debname.clone());
 
-            if is_downloading {
+            if let Some(init_tx) = init_tx {
+                serve_new_file(
+                    conn_details,
+                    status,
+                    init_tx,
+                    req,
+                    CacheFileStat::New,
+                    state,
+                )
+                .await
+            } else {
                 info!(
                     "Serving file `{}` already in download from mirror {} for client {}...",
                     conn_details.debname,
@@ -2338,8 +2354,6 @@ async fn process_cache_request(
                     conn_details.client.ip().to_canonical()
                 );
                 serve_downloading_file(conn_details, req, state.database, status).await
-            } else {
-                serve_new_file(conn_details, status, req, CacheFileStat::New, state).await
             }
         }
         Err(err) => {
