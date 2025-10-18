@@ -99,7 +99,6 @@ impl<'de> Deserialize<'de> for ConfigDomainName {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, sqlx::Type)]
-#[repr(transparent)]
 #[sqlx(transparent)]
 pub(crate) struct DomainName(String);
 
