@@ -143,7 +143,7 @@ use crate::web_interface::serve_web_interface;
 
 type Client = hyper_util::client::legacy::Client<
     hyper_timeout::TimeoutConnector<HttpsConnector<HttpConnector>>,
-    BoxBody<bytes::Bytes, ProxyCacheError>,
+    Empty<bytes::Bytes>,
 >;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -197,17 +197,15 @@ async fn tokio_mkstemp(
 
 pub(crate) async fn request_with_retry(
     client: &Client,
-    request: Request<BoxBody<bytes::Bytes, ProxyCacheError>>,
+    request: Request<Empty<bytes::Bytes>>,
 ) -> Result<Response<Incoming>, hyper_util::client::legacy::Error> {
     const MAX_RETRIES: u32 = 5;
 
-    if request.body().size_hint().exact() != Some(0) {
-        warn_once_or_info!(
-            "Request body is not empty, cannot retry. Request: {request:?}. Size hint: {:?}",
-            request.body().size_hint()
-        );
-        return client.request(request).await;
-    }
+    debug_assert_eq!(
+        request.body().size_hint().exact(),
+        Some(0),
+        "Invariant of Empty"
+    );
 
     let (parts, _body) = request.into_parts();
 
@@ -216,7 +214,7 @@ pub(crate) async fn request_with_retry(
     let mut sleep_curr = 1;
 
     loop {
-        let req_clone = Request::from_parts(parts.clone(), empty());
+        let req_clone = Request::from_parts(parts.clone(), Empty::new());
 
         match client.request(req_clone).await {
             Ok(response) => return Ok(response),
@@ -248,7 +246,7 @@ fn quick_response<T: Into<bytes::Bytes>>(
     Response::builder()
         .status(status)
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .body(ProxyCacheBody::Boxed(full(message)))
+        .body(ProxyCacheBody::Full(Full::new(message.into())))
         .expect("Response is valid")
 }
 
@@ -407,6 +405,8 @@ enum ProxyCacheBody {
     #[cfg(feature = "mmap")]
     MmapRateChecked(#[pin] RateCheckedBody<MmapData>, IpAddr),
     Boxed(#[pin] BoxBody<bytes::Bytes, ProxyCacheError>),
+    Full(#[pin] Full<bytes::Bytes>),
+    Empty(#[pin] Empty<bytes::Bytes>),
 }
 
 impl Body for ProxyCacheBody {
@@ -441,6 +441,14 @@ impl Body for ProxyCacheBody {
             EnumProj::Boxed(bytes) => bytes
                 .poll_frame(cx)
                 .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Bytes)),
+            EnumProj::Full(bytes) => bytes
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Bytes))
+                .map_err(|never| match never {}),
+            EnumProj::Empty(bytes) => bytes
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(ProxyCacheBodyData::Bytes))
+                .map_err(|never| match never {}),
         }
     }
 
@@ -451,6 +459,8 @@ impl Body for ProxyCacheBody {
             #[cfg(feature = "mmap")]
             Self::MmapRateChecked(rate_checked_body, _ip_addr) => rate_checked_body.size_hint(),
             Self::Boxed(box_body) => box_body.size_hint(),
+            Self::Full(full_body) => full_body.size_hint(),
+            Self::Empty(empty_body) => empty_body.size_hint(),
         }
     }
 
@@ -461,6 +471,8 @@ impl Body for ProxyCacheBody {
             #[cfg(feature = "mmap")]
             Self::MmapRateChecked(rate_checked_body, _ip_addr) => rate_checked_body.is_end_stream(),
             Self::Boxed(box_body) => box_body.is_end_stream(),
+            Self::Full(full_body) => full_body.is_end_stream(),
+            Self::Empty(empty_body) => empty_body.is_end_stream(),
         }
     }
 }
@@ -1878,7 +1890,7 @@ async fn serve_new_file(
         .uri(req.uri())
         .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
         .header(HOST, fwd_host)
-        .body(empty())
+        .body(Empty::new())
         .expect("request should be valid");
 
     if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) = &cfstate {
@@ -1930,7 +1942,7 @@ async fn serve_new_file(
                 .uri(moved_uri)
                 .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
                 .header(HOST, fwd_host)
-                .body(empty())
+                .body(Empty::new())
                 .expect("request should be valid");
 
             if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) = &cfstate
@@ -2040,7 +2052,7 @@ async fn serve_new_file(
                         ))
                         .expect("string is valid"),
                     ) // TODO: send AGE in other branches as well
-                    .body(ProxyCacheBody::Boxed(empty()))
+                    .body(ProxyCacheBody::Empty(Empty::new()))
                     .expect("HTTP response is valid");
 
                 if let Some(date) = fwd_response.headers_mut().remove(DATE) {
@@ -2259,7 +2271,9 @@ async fn serve_new_file(
                     RETRY_AFTER,
                     HeaderValue::from(gcfg.experimental_parallel_hack_retryafter.get()),
                 )
-                .body(ProxyCacheBody::Boxed(full("Parallel Download Hack")))
+                .body(ProxyCacheBody::Full(Full::new(
+                    "Parallel Download Hack".into(),
+                )))
                 .expect("Response is valid");
         }
     }
@@ -2461,7 +2475,7 @@ fn connect_response(
         }
     });
 
-    Response::new(ProxyCacheBody::Boxed(empty()))
+    Response::new(ProxyCacheBody::Empty(Empty::new()))
 }
 
 #[inline]
@@ -2829,18 +2843,19 @@ async fn pre_process_client_request(
         uncacheables.push((requested_host.clone(), requested_path.to_owned()));
     }
 
-    let (mut parts, body) = req.into_parts();
-    parts.headers.insert(
-        USER_AGENT,
-        APP_USER_AGENT.parse().expect("app user agent is ASCII"),
-    );
+    if req.body().size_hint().exact() != Some(0) {
+        warn_once_or_info!("Download request has non empty body, not forwarding body: {req:?}");
+    }
+
+    let (mut parts, _body) = req.into_parts();
+    parts
+        .headers
+        .insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
 
     let mut parts_cloned = parts.clone();
-    let is_empty_body = body.size_hint().exact() == Some(0);
 
-    let body = body.map_err(ProxyCacheError::Hyper).boxed();
     // TODO: tweak http version?
-    let fwd_request = Request::from_parts(parts, body);
+    let fwd_request = Request::from_parts(parts, Empty::new());
 
     trace!("Forwarded request: {fwd_request:?}");
 
@@ -2878,13 +2893,13 @@ async fn pre_process_client_request(
             .and_then(|lc_str| lc_str.parse::<hyper::Uri>().ok())
     {
         debug!(
-            "Requested URI: {}, Moved URI: {moved_uri}, Body is-empty: {}",
-            parts_cloned.uri, is_empty_body
+            "Requested URI: {}, Moved URI: {moved_uri}",
+            parts_cloned.uri
         );
 
         if moved_uri.host().is_some_and(is_host_allowed) {
             parts_cloned.uri = moved_uri;
-            let redirected_request = Request::from_parts(parts_cloned, empty());
+            let redirected_request = Request::from_parts(parts_cloned, Empty::new());
 
             trace!("Redirected request: {redirected_request:?}");
 
@@ -2920,20 +2935,6 @@ async fn pre_process_client_request(
     trace!("Outgoing response: {response:?}");
 
     response
-}
-
-#[must_use]
-fn empty() -> BoxBody<bytes::Bytes, ProxyCacheError> {
-    Empty::<bytes::Bytes>::new()
-        .map_err(|never| match never {})
-        .boxed()
-}
-
-#[must_use]
-fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody<bytes::Bytes, ProxyCacheError> {
-    Full::new(chunk.into())
-        .map_err(|never| match never {})
-        .boxed()
 }
 
 #[must_use]

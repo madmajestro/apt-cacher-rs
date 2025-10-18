@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Empty};
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use log::{debug, error, info, trace, warn};
 use memfd::MemfdOptions;
@@ -18,7 +18,7 @@ use crate::{
     ActiveDownloads, Client, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
     database::{Database, MirrorEntry},
     deb_mirror::{Mirror, UriFormat},
-    empty, global_config,
+    global_config,
     humanfmt::HumanFmt,
     info_once, request_with_retry, task_cache_scan,
 };
@@ -160,7 +160,7 @@ async fn get_package_file(
             let req = Request::builder()
                 .method(Method::GET)
                 .uri(&uri_tmp)
-                .body(empty())
+                .body(Empty::new())
                 .expect("Request should be valid");
             match request_with_retry(&https_client, req).await {
                 Ok(r) => break r,

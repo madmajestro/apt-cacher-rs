@@ -6,6 +6,7 @@ use build_html::Html;
 use build_html::HtmlContainer;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
+use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{
     Request, Response, StatusCode,
@@ -23,7 +24,7 @@ use crate::RUNTIMEDETAILS;
 use crate::State;
 use crate::UNCACHEABLES;
 use crate::global_config;
-use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full, quick_response};
+use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, quick_response};
 
 const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
     format_description!("[day] [month repr:short] [year] [hour]:[minute]:[second]");
@@ -342,12 +343,12 @@ async fn serve_root(state: State) -> Response<ProxyCacheBody> {
         )
         .to_html_string();
 
-    let boxed_body = ProxyCacheBody::Boxed(full(html));
+    let body = ProxyCacheBody::Full(Full::new(html.into()));
 
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .body(boxed_body)
+        .body(body)
         .expect("HTTP response is valid");
 
     trace!("Local web interface response: {response:?}");
@@ -365,12 +366,12 @@ fn serve_logs() -> Response<ProxyCacheBody> {
         buf.push(b'\n');
     }
 
-    let boxed_body = ProxyCacheBody::Boxed(full(buf));
+    let body = ProxyCacheBody::Full(Full::new(buf.into()));
 
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(SERVER, HeaderValue::from_static(APP_NAME))
-        .body(boxed_body)
+        .body(body)
         .expect("HTTP response is valid");
 
     trace!("Local web interface response: {response:?}");
