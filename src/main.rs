@@ -2,9 +2,13 @@
     test,
     allow(clippy::map_unwrap_or, clippy::unwrap_used, clippy::too_many_lines)
 )]
+#![cfg_attr(not(feature = "mmap"), forbid(unsafe_code))]
 
 #[cfg(not(any(feature = "tls_hyper", feature = "tls_rustls")))]
 compile_error!("Either feature \"tls_hyper\" or \"tls_rustls\" must be enabled for this crate.");
+
+#[cfg(all(feature = "tls_hyper", feature = "tls_rustls"))]
+compile_error!("Feature \"tls_hyper\" and \"tls_rustls\" are mutually exclusive.");
 
 mod channel_body;
 mod config;
