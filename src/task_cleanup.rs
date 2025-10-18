@@ -85,6 +85,8 @@ impl PackageFormat {
         name: &str,
         file_list: &mut HashMap<OsString, PathBuf>,
     ) -> Result<(), ProxyCacheError> {
+        debug_assert!(!file_list.is_empty());
+
         file.rewind().await.map_err(|err| {
             error!("Error rewinding in-memory file `{name}`:  {err}");
             err
@@ -109,9 +111,7 @@ impl PackageFormat {
                         continue;
                     };
 
-                    file_list.remove(filename);
-
-                    if file_list.is_empty() {
+                    if file_list.remove(filename).is_some() && file_list.is_empty() {
                         break;
                     }
                 }
