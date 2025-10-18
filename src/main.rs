@@ -219,7 +219,10 @@ pub(crate) async fn request_with_retry(
         match client.request(req_clone).await {
             Ok(response) => return Ok(response),
             Err(err) if !err.is_connect() => {
-                warn_once_or_info!("Request of internal client failed:  {err}  --  {err:?}");
+                warn_once_or_info!(
+                    "Request of internal client to {} failed:  {err}  --  {err:?}",
+                    parts.uri
+                );
                 return Err(err);
             }
             Err(err) => {
@@ -687,7 +690,7 @@ async fn serve_cached_file(
         Ok(m) => m,
         Err(err) => {
             error!(
-                "Error getting metadata of cached file {}:  {err}",
+                "Error getting metadata of cached file `{}`:  {err}",
                 file_path.display()
             );
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -723,7 +726,7 @@ async fn serve_cached_file(
         Ok(c) => c,
         Err(_err) => {
             error!(
-                "Content length of {} for file {} from mirror {}{} for client {} is too large",
+                "Content length of {} for file `{}` from mirror {}{} for client {} is too large",
                 content_length,
                 file_path.display(),
                 conn_details.mirror,
@@ -785,7 +788,7 @@ async fn serve_cached_file_mmap(
     let client_ip = conn_details.client.ip();
     let thread_result = tokio::task::spawn_blocking(move || {
         trace!(
-            "Using mmap(2) with start={content_start} and length={content_length} from content_range={content_range:?} for file {}",
+            "Using mmap(2) with start={content_start} and length={content_length} from content_range={content_range:?} for file `{}`",
             file_pathbuf.display()
         );
         // SAFETY:
@@ -800,7 +803,7 @@ async fn serve_cached_file_mmap(
             Ok(f) => f,
             Err(err) => {
                 error!(
-                    "Failed to mmap downloaded file {}:  {err}",
+                    "Failed to mmap downloaded file `{}`:  {err}",
                     file_pathbuf.display()
                 );
                 return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -814,7 +817,7 @@ async fn serve_cached_file_mmap(
 
         if let Err(err) = memory_map.advise(Advice::Sequential) {
             warn_once_or_info!(
-                "Failed to advice memory mapping of file {}:  {err}",
+                "Failed to advice memory mapping of file `{}`:  {err}",
                 file_pathbuf.display()
             );
         }
@@ -866,7 +869,7 @@ async fn serve_cached_file_buf(
 ) -> Response<ProxyCacheBody> {
     if let Err(err) = file.seek(std::io::SeekFrom::Start(start)).await {
         error!(
-            "Error seeking cached file {} to {start}/{file_size}:  {err}",
+            "Error seeking cached file `{}` to {start}/{file_size}:  {err}",
             file_path.display()
         );
         return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -989,7 +992,7 @@ async fn serve_volatile_file(
             .expect("Platform should support modification timestamps"),
         Err(err) => {
             error!(
-                "Failed to get modification timestamp of file {}:  {err}",
+                "Failed to get modification timestamp of file `{}`:  {err}",
                 file_path.display()
             );
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -1272,7 +1275,7 @@ async fn download_file(
             }
 
             if let Err(err) = writer.write_all_buf(&mut chunk).await {
-                error!("Error writing to file {}:  {err}", output.1.display());
+                error!("Error writing to file `{}`:  {err}", output.1.display());
                 *status.write().await = ActiveDownloadStatus::Aborted(err.into());
                 return;
             }
@@ -1296,7 +1299,7 @@ async fn download_file(
     }
 
     if let Err(err) = writer.flush().await {
-        error!("Error writing to file {}:  {err}", output.1.display());
+        error!("Error writing to file `{}`:  {err}", output.1.display());
         *status.write().await = ActiveDownloadStatus::Aborted(err.into());
         return;
     }
@@ -1321,7 +1324,7 @@ async fn download_file(
         && err.kind() != tokio::io::ErrorKind::AlreadyExists
     {
         error!(
-            "Failed to create destination directory {}:  {err}",
+            "Failed to create destination directory `{}`:  {err}",
             dest_dir.display()
         );
         *status.write().await = ActiveDownloadStatus::Aborted(err.into());
@@ -1462,7 +1465,7 @@ async fn serve_unfinished_file(
     tokio::task::spawn(async move {
         let start = Instant::now();
         trace!(
-            "Starting stream task for downloading file {} from mirror {} with length {content_length:?} for client {}...",
+            "Starting stream task for downloading file `{}` from mirror {} with length {content_length:?} for client {}...",
             file_path.display(),
             conn_details.mirror,
             conn_details.client.ip().to_canonical()
@@ -2111,7 +2114,7 @@ async fn serve_new_file(
         None if is_volatile => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
         None => {
             warn!(
-                "Could not extract content-length from header for file `{}` from mirror {}: {fwd_response:?}",
+                "Could not extract content-length from header for file {} from mirror {}: {fwd_response:?}",
                 conn_details.debname, conn_details.mirror
             );
             state
@@ -2192,7 +2195,7 @@ async fn serve_new_file(
     };
 
     info!(
-        "Downloading and serving new file `{}` from mirror {} for client {}...",
+        "Downloading and serving new file {} from mirror {} for client {}...",
         conn_details.debname,
         conn_details.mirror,
         conn_details.client.ip().to_canonical()
@@ -2358,7 +2361,7 @@ async fn process_cache_request(
                 .await
             } else {
                 info!(
-                    "Serving file `{}` already in download from mirror {} for client {}...",
+                    "Serving file {} already in download from mirror {} for client {}...",
                     conn_details.debname,
                     conn_details.mirror,
                     conn_details.client.ip().to_canonical()
@@ -2434,7 +2437,7 @@ fn connect_response(
             .is_err()
     {
         info!(
-            "Rejecting https tunnel request for client {} due to not permitted host `{}`",
+            "Rejecting https tunnel request for client {} due to not permitted host {}",
             client.ip().to_canonical(),
             host
         );
@@ -3045,12 +3048,18 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = Database::connect(&config.database_path, config.database_slow_timeout)
         .await
         .map_err(|err| {
-            error!("Error creating database:  {err}");
+            error!(
+                "Error creating database `{}`:  {err}",
+                config.database_path.display()
+            );
             err
         })?;
 
     database.init_tables().await.map_err(|err| {
-        error!("Error initializing database:  {err}");
+        error!(
+            "Error initializing database `{}`:  {err}",
+            config.database_path.display()
+        );
         err
     })?;
 
@@ -3367,7 +3376,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if cgf_fallback {
         info!(
-            "Default configuration file {} not found, using defaults",
+            "Default configuration file `{}` not found, using defaults",
             args.config_path.display()
         );
     }
