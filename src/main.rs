@@ -1077,7 +1077,9 @@ enum ActiveDownloadStatus {
 #[derive(Clone, Debug)]
 struct ActiveDownloads {
     inner: Arc<
-        std::sync::Mutex<HashMap<ActiveDownloadKey, Arc<tokio::sync::Mutex<ActiveDownloadStatus>>>>,
+        parking_lot::RwLock<
+            HashMap<ActiveDownloadKey, Arc<tokio::sync::RwLock<ActiveDownloadStatus>>>,
+        >,
     >,
 }
 
@@ -1085,16 +1087,13 @@ impl ActiveDownloads {
     #[must_use]
     fn new() -> Self {
         Self {
-            inner: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            inner: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         }
     }
 
     #[must_use]
     fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .expect("other users should not panic")
-            .len()
+        self.inner.read().len()
     }
 
     #[must_use]
@@ -1104,16 +1103,16 @@ impl ActiveDownloads {
         debname: String,
     ) -> (
         Option<tokio::sync::watch::Sender<()>>,
-        Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+        Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     ) {
         let key = ActiveDownloadKey { mirror, debname };
-        let mut ads = self.inner.lock().expect("other users should not panic");
+        let mut ads = self.inner.write();
 
         match ads.entry(key) {
             Entry::Occupied(occupied_entry) => (None, Arc::clone(occupied_entry.get())),
             Entry::Vacant(vacant_entry) => {
                 let (tx, rx) = tokio::sync::watch::channel(());
-                let status = Arc::new(tokio::sync::Mutex::new(ActiveDownloadStatus::Init(rx)));
+                let status = Arc::new(tokio::sync::RwLock::new(ActiveDownloadStatus::Init(rx)));
                 vacant_entry.insert(Arc::clone(&status));
                 (Some(tx), status)
             }
@@ -1124,21 +1123,20 @@ impl ActiveDownloads {
         let key = ActiveDownloadKeyRef { mirror, debname };
         let was_present = self
             .inner
-            .lock()
-            .expect("other users should not panic")
+            .write()
             .remove(&key as &dyn AsActiveDownloadKeyRef);
         assert!(was_present.is_some());
     }
 
     #[must_use]
     fn download_size(&self) -> u64 {
-        let ads = self.inner.lock().expect("other users should not panic");
+        let ads = self.inner.read();
 
         tokio::task::block_in_place(move || {
             let mut sum = 0;
 
             for download in ads.values() {
-                let d = download.blocking_lock();
+                let d = download.blocking_read();
                 if let ActiveDownloadStatus::Download(_, size, _) = &*d {
                     sum += size.upper().get();
                 }
@@ -1150,13 +1148,13 @@ impl ActiveDownloads {
 
     #[must_use]
     fn download_count(&self) -> usize {
-        let ads = self.inner.lock().expect("other users should not panic");
+        let ads = self.inner.read();
 
         tokio::task::block_in_place(move || {
             let mut count = 0;
 
             for download in ads.values() {
-                let d = download.blocking_lock();
+                let d = download.blocking_read();
                 match &*d {
                     ActiveDownloadStatus::Init(_)
                     | ActiveDownloadStatus::Download(_, _, _)
@@ -1177,7 +1175,7 @@ async fn download_file(
     database: Database,
     conn_details: &ConnectionDetails,
     warn_on_override: bool,
-    status: &Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    status: &Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     input: (Incoming, ContentLength),
     output: (tokio::fs::File, PathBuf),
     tx: tokio::sync::watch::Sender<u32>,
@@ -1215,7 +1213,7 @@ async fn download_file(
             Err(err) => {
                 match err {
                     RateCheckedBodyErr::DownloadRate(download_rate_err) => {
-                        *status.lock().await = ActiveDownloadStatus::Aborted(
+                        *status.write().await = ActiveDownloadStatus::Aborted(
                             ProxyCacheError::MirrorDownloadRate(error::MirrorDownloadRate {
                                 download_rate_err,
                                 mirror: conn_details.mirror.clone(),
@@ -1229,7 +1227,7 @@ async fn download_file(
                             "Error extracting frame from body for file {} from mirror {}:  {herr}",
                             conn_details.debname, conn_details.mirror
                         );
-                        *status.lock().await =
+                        *status.write().await =
                             ActiveDownloadStatus::Aborted(ProxyCacheError::Hyper(herr));
                     }
                     RateCheckedBodyErr::ProxyCache(perr) => {
@@ -1237,7 +1235,7 @@ async fn download_file(
                             "Error extracting frame from body for file {} from mirror {}:  {perr}",
                             conn_details.debname, conn_details.mirror
                         );
-                        *status.lock().await = ActiveDownloadStatus::Aborted(perr);
+                        *status.write().await = ActiveDownloadStatus::Aborted(perr);
                     }
                 }
 
@@ -1252,7 +1250,7 @@ async fn download_file(
                     "More bytes received than expected: {bytes} vs {}",
                     content_length.upper()
                 );
-                *status.lock().await = ActiveDownloadStatus::Aborted(
+                *status.write().await = ActiveDownloadStatus::Aborted(
                     ProxyCacheError::ContentTooLarge(content_length, bytes),
                 );
                 return;
@@ -1260,7 +1258,7 @@ async fn download_file(
 
             if let Err(err) = writer.write_all_buf(&mut chunk).await {
                 error!("Error writing to file {}:  {err}", output.1.display());
-                *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
+                *status.write().await = ActiveDownloadStatus::Aborted(err.into());
                 return;
             }
 
@@ -1285,7 +1283,7 @@ async fn download_file(
 
     if let Err(err) = writer.flush().await {
         error!("Error writing to file {}:  {err}", output.1.display());
-        *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
+        *status.write().await = ActiveDownloadStatus::Aborted(err.into());
         return;
     }
     drop(writer);
@@ -1312,7 +1310,7 @@ async fn download_file(
             "Failed to create destination directory {}:  {err}",
             dest_dir.display()
         );
-        *status.lock().await = ActiveDownloadStatus::Aborted(err.into());
+        *status.write().await = ActiveDownloadStatus::Aborted(err.into());
         return;
     }
 
@@ -1333,7 +1331,7 @@ async fn download_file(
     debug!("Saving downloaded file to `{}`", dest_path.display());
 
     {
-        let mut locked_status = status.lock().await;
+        let mut locked_status = status.write().await;
 
         /* Should only happen for concurrent downloads from aliased mirrors */
         if warn_on_override && tokio::fs::try_exists(&dest_path).await.unwrap_or(false) {
@@ -1356,8 +1354,7 @@ async fn download_file(
                             .get()
                             .expect("global is set in main()")
                             .cache_size
-                            .lock()
-                            .expect("other uses should not panic");
+                            .lock();
                         *mg_cache_size = mg_cache_size
                             .checked_sub(diff)
                             .expect("cache size should not underflow");
@@ -1411,7 +1408,7 @@ async fn serve_unfinished_file(
     database: Database,
     mut file: tokio::fs::File,
     file_path: PathBuf,
-    status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     content_length: ContentLength,
     mut receiver: tokio::sync::watch::Receiver<u32>,
 ) -> Response<ProxyCacheBody> {
@@ -1492,7 +1489,7 @@ async fn serve_unfinished_file(
 
             if let Err(_err) = receiver.changed().await {
                 /* sender closed, either download finished or aborted */
-                let st = status.lock().await;
+                let st = status.read().await;
                 match *st {
                     ActiveDownloadStatus::Finished(_) => {
                         finished = true;
@@ -1633,12 +1630,12 @@ async fn serve_downloading_file(
     conn_details: ConnectionDetails,
     req: Request<hyper::body::Incoming>,
     database: Database,
-    status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
 ) -> Response<ProxyCacheBody> {
     let mut not_found_once = false;
 
     loop {
-        let st = status.lock().await;
+        let st = status.read().await;
 
         match &*st {
             ActiveDownloadStatus::Aborted(_err) => {
@@ -1760,7 +1757,7 @@ impl std::fmt::Display for ContentLength {
 #[expect(clippy::too_many_lines)]
 async fn serve_new_file(
     conn_details: ConnectionDetails,
-    status: Arc<tokio::sync::Mutex<ActiveDownloadStatus>>,
+    status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     init_tx: tokio::sync::watch::Sender<()>,
     req: Request<hyper::body::Incoming>,
     cfstate: CacheFileStat<'_>,
@@ -1976,7 +1973,7 @@ async fn serve_new_file(
 
     if let CacheFileStat::Volatile((file, file_path, local_modification_time)) = cfstate {
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
-            *status.lock().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
+            *status.write().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
             // ignore if there are no receivers
             init_tx.send_replace(());
 
@@ -2118,8 +2115,7 @@ async fn serve_new_file(
             .get()
             .expect("global is set in main()")
             .cache_size
-            .lock()
-            .expect("other uses should not panic");
+            .lock();
         let quota_reached = content_length
             .upper()
             .checked_add(*mg_cache_size)
@@ -2169,8 +2165,7 @@ async fn serve_new_file(
                     .get()
                     .expect("global is set in main()")
                     .cache_size
-                    .lock()
-                    .expect("other uses should not panic");
+                    .lock();
 
                 *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
             }
@@ -2191,7 +2186,7 @@ async fn serve_new_file(
 
     let (tx, rx) = tokio::sync::watch::channel(0);
 
-    *status.lock().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
+    *status.write().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
     // ignore if there are no receivers
     init_tx.send_replace(());
 
@@ -2212,15 +2207,14 @@ async fn serve_new_file(
         .await;
 
         {
-            let ads = st.lock().await;
+            let ads = st.read().await;
             assert!(!matches!(*ads, ActiveDownloadStatus::Init(_)));
             if !matches!(*(ads), ActiveDownloadStatus::Finished(_)) {
                 let mut mg_cache_size = RUNTIMEDETAILS
                     .get()
                     .expect("global is set in main()")
                     .cache_size
-                    .lock()
-                    .expect("other uses should not panic");
+                    .lock();
 
                 *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
             }
@@ -2825,11 +2819,7 @@ async fn pre_process_client_request(
     } else {
         warn_once_or_info!("Proxying (without caching) request {}", req.uri());
 
-        let mut uncacheables = UNCACHEABLES
-            .get()
-            .expect("Initialized in main()")
-            .lock()
-            .expect("Other users should not panic");
+        let mut uncacheables = UNCACHEABLES.get().expect("Initialized in main()").write();
 
         // always delete to keep recent entries fresh
         uncacheables.retain(|(host, path)| *host != requested_host || path != requested_path);
@@ -3067,7 +3057,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let rd = RUNTIMEDETAILS.get().expect("global set in main()");
 
             {
-                let mut mg = rd.cache_size.lock().expect("Other users should not panic");
+                let mut mg = rd.cache_size.lock();
                 *mg = cache_size;
             }
 
@@ -3296,12 +3286,13 @@ struct Cli {
 struct RuntimeDetails {
     start_time: time::OffsetDateTime,
     config: Config,
-    cache_size: std::sync::Mutex<u64>,
+    cache_size: parking_lot::Mutex<u64>,
 }
 
 static RUNTIMEDETAILS: OnceLock<RuntimeDetails> = OnceLock::new();
 static LOGSTORE: OnceLock<LogStore> = OnceLock::new();
-static UNCACHEABLES: OnceLock<std::sync::Mutex<RingBuffer<(DomainName, String)>>> = OnceLock::new();
+static UNCACHEABLES: OnceLock<parking_lot::RwLock<RingBuffer<(DomainName, String)>>> =
+    OnceLock::new();
 
 #[must_use]
 #[inline]
@@ -3325,7 +3316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .set(RuntimeDetails {
             start_time: time::OffsetDateTime::now_utc(),
             config,
-            cache_size: std::sync::Mutex::new(0),
+            cache_size: parking_lot::Mutex::new(0),
         })
         .expect("Initial set in main() should succeed");
 
@@ -3351,7 +3342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .expect("Initial set in main() should succeed");
 
     UNCACHEABLES
-        .set(std::sync::Mutex::new(RingBuffer::new(nonzero!(20))))
+        .set(parking_lot::RwLock::new(RingBuffer::new(nonzero!(20))))
         .expect("Initial set in main() should succeed");
 
     CombinedLogger::init(vec![

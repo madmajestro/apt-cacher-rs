@@ -102,6 +102,7 @@ dependencies = [
  "memfd",
  "memmap2",
  "nix",
+ "parking_lot",
  "pin-project",
  "rand 0.9.2",
  "rustls",

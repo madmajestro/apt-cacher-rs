@@ -1,7 +1,6 @@
-use std::{
-    num::NonZero,
-    sync::{Arc, Mutex},
-};
+use std::{num::NonZero, sync::Arc};
+
+use parking_lot::{RwLock, RwLockReadGuard};
 
 use crate::ringbuffer::RingBuffer;
 
@@ -56,29 +55,28 @@ impl std::io::Write for LogStoreImpl {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LogStore {
-    inner: Arc<Mutex<LogStoreImpl>>,
+    inner: Arc<RwLock<LogStoreImpl>>,
 }
 
 impl LogStore {
     #[must_use]
     pub(crate) fn new(capacity: NonZero<usize>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(LogStoreImpl::new(capacity))),
+            inner: Arc::new(RwLock::new(LogStoreImpl::new(capacity))),
         }
     }
 }
 
 impl LogStore {
     pub(crate) fn entries(&self) -> LogStoreEntryListGuard<'_> {
-        let guard = self.inner.lock().expect("Other users should not panic");
+        let guard = self.inner.read();
         LogStoreEntryListGuard { guard }
     }
 }
 
 impl std::io::Write for LogStore {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut inner = self.inner.lock().expect("Other users should not panic");
-        inner.write(buf)
+        self.inner.write().write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -88,7 +86,7 @@ impl std::io::Write for LogStore {
 
 #[must_use]
 pub(crate) struct LogStoreEntryListGuard<'a> {
-    guard: std::sync::MutexGuard<'a, LogStoreImpl>,
+    guard: RwLockReadGuard<'a, LogStoreImpl>,
 }
 
 impl LogStoreEntryListGuard<'_> {

@@ -240,11 +240,7 @@ fn build_uncacheable_table() -> Table {
         Table::new().with_header_row(&["Requested Host", "Requested Path"]);
 
     {
-        let uncacheables = UNCACHEABLES
-            .get()
-            .expect("Initialized in main()")
-            .lock()
-            .expect("Other users should not panic");
+        let uncacheables = UNCACHEABLES.get().expect("Initialized in main()").read();
 
         for (host, path) in uncacheables.iter() {
             html_table_uncacheables.add_body_row([&format!("{host}"), path]);

@@ -207,12 +207,12 @@ pub(crate) async fn task_cleanup(
     https_client: Client,
     active_downloads: ActiveDownloads,
 ) -> Result<(), ProxyCacheError> {
-    static TASK_ACTIVE: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
+    static TASK_ACTIVE: OnceLock<parking_lot::Mutex<bool>> = OnceLock::new();
 
-    let mutex = TASK_ACTIVE.get_or_init(|| std::sync::Mutex::new(false));
+    let mutex = TASK_ACTIVE.get_or_init(|| parking_lot::Mutex::new(false));
 
     {
-        let mut val = mutex.lock().expect("Other users should not panic");
+        let mut val = mutex.lock();
         if *val {
             info!("Skipping cleanup task since already in progress");
             return Ok(());
@@ -223,7 +223,7 @@ pub(crate) async fn task_cleanup(
     let ret = task_cleanup_impl(database, https_client, active_downloads).await;
 
     {
-        let mut val = mutex.lock().expect("Other users should not panic");
+        let mut val = mutex.lock();
         assert!(*val);
         *val = false;
     }
@@ -304,8 +304,7 @@ async fn task_cleanup_impl(
             .get()
             .expect("global set in main")
             .cache_size
-            .lock()
-            .expect("other users should not panic");
+            .lock();
 
         match mg_cache_size.checked_sub(bytes_removed) {
             Some(val) => *mg_cache_size = val,

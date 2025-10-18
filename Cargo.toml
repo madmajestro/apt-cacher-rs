@@ -41,6 +41,7 @@ log = "0.4.20"
 memfd = "0.6.4"
 memmap2 = { version = "0.9", optional = true }
 nix = { version = "0.30", features = ["user"] }
+parking_lot = "0.12.5"
 pin-project = "1.1.4"
 rand = "0.9"
 rustls = { version = "0.23", optional = true }
@@ -80,6 +81,7 @@ cast_sign_loss = "warn"
 clone_on_ref_ptr = "warn"
 collection_is_never_read = "warn"
 dbg_macro = "warn"
+disallowed_types = "warn"
 debug_assert_with_mut_call = "warn"
 enum_glob_use = "warn"
 #exit = "warn" expect() does not work: https://github.com/rust-lang/rust-clippy/issues/15107
