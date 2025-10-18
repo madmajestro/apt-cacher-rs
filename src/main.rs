@@ -642,12 +642,12 @@ impl Body for MmapBody {
     type Error = Infallible;
 
     fn is_end_stream(&self) -> bool {
-        assert!(self.position <= self.length);
+        debug_assert!(self.position <= self.length);
         self.position == self.length
     }
 
     fn size_hint(&self) -> SizeHint {
-        assert!(self.position <= self.length);
+        debug_assert!(self.position <= self.length);
         SizeHint::with_exact((self.length - self.position) as u64)
     }
 
