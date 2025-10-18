@@ -2273,17 +2273,22 @@ async fn serve_new_file(
                 gcfg.experimental_parallel_hack_retryafter
             );
 
-            return Response::builder()
+            let mut response = Response::builder()
                 .status(gcfg.experimental_parallel_hack_statuscode)
                 .header(SERVER, HeaderValue::from_static(APP_NAME))
-                .header(
-                    RETRY_AFTER,
-                    HeaderValue::from(gcfg.experimental_parallel_hack_retryafter.get()),
-                )
-                .body(ProxyCacheBody::Full(Full::new(
-                    "Parallel Download Hack".into(),
-                )))
+                .body(ProxyCacheBody::Empty(Empty::new()))
                 .expect("Response is valid");
+
+            if gcfg.experimental_parallel_hack_retryafter != 0 {
+                response.headers_mut().append(
+                    RETRY_AFTER,
+                    HeaderValue::from(gcfg.experimental_parallel_hack_retryafter),
+                );
+            }
+
+            trace!("Outgoing parallel download hack response: {response:?}");
+
+            return response;
         }
     }
 

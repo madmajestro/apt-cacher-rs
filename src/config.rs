@@ -52,7 +52,7 @@ pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MAXPARALLEL: Option<NonZero<
     Some(nonzero!(3));
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE: hyper::StatusCode =
     hyper::StatusCode::SERVICE_UNAVAILABLE;
-pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER: NonZero<u16> = nonzero!(5);
+pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER: u16 = 5;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_FACTOR: f64 = 0.2;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MINSIZE: Option<NonZero<u64>> =
     Some(nonzero!(10 * 1024 * 1024));
@@ -308,7 +308,7 @@ pub(crate) struct Config {
     pub(crate) experimental_parallel_hack_statuscode: hyper::StatusCode,
 
     #[serde(default = "default_experimental_parallel_hack_retryafter")]
-    pub(crate) experimental_parallel_hack_retryafter: NonZero<u16>,
+    pub(crate) experimental_parallel_hack_retryafter: u16,
 
     #[serde(default = "default_experimental_parallel_hack_factor")]
     pub(crate) experimental_parallel_hack_factor: f64,
@@ -554,7 +554,7 @@ const fn default_experimental_parallel_hack_statuscode() -> hyper::StatusCode {
     DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE
 }
 
-const fn default_experimental_parallel_hack_retryafter() -> NonZero<u16> {
+const fn default_experimental_parallel_hack_retryafter() -> u16 {
     DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER
 }
 
