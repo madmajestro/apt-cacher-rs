@@ -1742,6 +1742,7 @@ enum CacheFileStat<'a> {
     New,
 }
 
+#[must_use]
 fn is_host_allowed(requested_host: &str) -> bool {
     global_config()
         .allowed_mirrors
@@ -1758,6 +1759,7 @@ enum ContentLength {
 }
 
 impl ContentLength {
+    #[must_use]
     const fn upper(&self) -> NonZero<u64> {
         match self {
             Self::Exact(s) | Self::Unknown(s) => *s,
