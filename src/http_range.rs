@@ -40,7 +40,7 @@ pub(crate) fn http_datetime_to_systemtime(time: &str) -> Option<SystemTime> {
 /// the start byte, and the total number of bytes on success.
 #[must_use]
 pub(crate) fn http_parse_range(
-    range: Option<&str>,
+    range: &str,
     if_range: Option<&str>,
     file_size: u64,
     modification_time: SystemTime,
@@ -53,7 +53,7 @@ pub(crate) fn http_parse_range(
 
     // TODO: support multiple ranges: bytes=500-600,601-999  --  bytes=500-700,601-999
 
-    let byte_range = range?.strip_prefix("bytes=")?;
+    let byte_range = range.strip_prefix("bytes=")?;
     if byte_range.contains(',') {
         warn_once_or_info!(
             "HTTP Range Request with multiple ranges are not supported (`{byte_range}`)"
@@ -161,7 +161,7 @@ mod tests {
 
         assert_eq!(
             http_parse_range(
-                Some("bytes=0-1023"),
+                "bytes=0-1023",
                 Some("Tue, 21 Mar 2361 19:15:09 GMT"),
                 8192,
                 UNIX_EPOCH
@@ -170,47 +170,47 @@ mod tests {
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=0-1023"), None, 8192, UNIX_EPOCH),
+            http_parse_range("bytes=0-1023", None, 8192, UNIX_EPOCH),
             Some(("bytes 0-1023/8192".to_string(), 0, 1024))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=5000-6999"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=5000-6999", None, 10000, UNIX_EPOCH),
             Some(("bytes 5000-6999/10000".to_string(), 5000, 2000))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=5000-6999"), None, 6000, UNIX_EPOCH),
+            http_parse_range("bytes=5000-6999", None, 6000, UNIX_EPOCH),
             Some(("bytes 5000-5999/6000".to_string(), 5000, 1000))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=0-0"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=0-0", None, 10000, UNIX_EPOCH),
             Some(("bytes 0-0/10000".to_string(), 0, 1))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=9999-9999"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=9999-9999", None, 10000, UNIX_EPOCH),
             Some(("bytes 9999-9999/10000".to_string(), 9999, 1))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=-1"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=-1", None, 10000, UNIX_EPOCH),
             Some(("bytes 9999-9999/10000".to_string(), 9999, 1))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=-500"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=-500", None, 10000, UNIX_EPOCH),
             Some(("bytes 9500-9999/10000".to_string(), 9500, 500))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=-1000"), None, 400, UNIX_EPOCH),
+            http_parse_range("bytes=-1000", None, 400, UNIX_EPOCH),
             Some(("bytes 0-399/400".to_string(), 0, 400))
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=4096-"), None, 10000, UNIX_EPOCH),
+            http_parse_range("bytes=4096-", None, 10000, UNIX_EPOCH),
             Some(("bytes 4096-9999/10000".to_string(), 4096, 5904))
         );
 
@@ -218,7 +218,7 @@ mod tests {
 
         assert_eq!(
             http_parse_range(
-                Some("bytes=0-1023"),
+                "bytes=0-1023",
                 Some("Thu, 01 Jan 1970 00:00:01 GMT"),
                 8192,
                 UNIX_EPOCH + Duration::from_millis(500)
@@ -228,7 +228,7 @@ mod tests {
 
         assert_eq!(
             http_parse_range(
-                Some("bytes=0-1023"),
+                "bytes=0-1023",
                 Some("Thu, 01 Jan 1970 00:00:00 GMT"),
                 8192,
                 UNIX_EPOCH + Duration::from_millis(500)
@@ -243,7 +243,7 @@ mod tests {
         /* empty file */
         assert_eq!(
             http_parse_range(
-                Some("bytes=0-1023"),
+                "bytes=0-1023",
                 Some("Tue, 21 Mar 2361 19:15:09 GMT"),
                 0,
                 UNIX_EPOCH
@@ -254,7 +254,7 @@ mod tests {
         /* start out-of-range */
         assert_eq!(
             http_parse_range(
-                Some("bytes=9999-99999"),
+                "bytes=9999-99999",
                 Some("Tue, 21 Mar 2361 19:15:09 GMT"),
                 8192,
                 UNIX_EPOCH
@@ -265,7 +265,7 @@ mod tests {
         /* end less than start */
         assert_eq!(
             http_parse_range(
-                Some("bytes=1023-0"),
+                "bytes=1023-0",
                 Some("Tue, 21 Mar 2361 19:15:09 GMT"),
                 8192,
                 UNIX_EPOCH
@@ -276,7 +276,7 @@ mod tests {
         /* outdated */
         assert_eq!(
             http_parse_range(
-                Some("bytes=0-1023"),
+                "bytes=0-1023",
                 Some("Tue, 21 Mar 2361 19:15:09 GMT"),
                 8192,
                 UNIX_EPOCH + Duration::from_secs(12_345_678_910)
@@ -285,48 +285,36 @@ mod tests {
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=4000-5999"), None, 3000, UNIX_EPOCH),
+            http_parse_range("bytes=4000-5999", None, 3000, UNIX_EPOCH),
             None
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=0-1023"), Some("ABCDEFG"), 8192, UNIX_EPOCH),
+            http_parse_range("bytes=0-1023", Some("ABCDEFG"), 8192, UNIX_EPOCH),
             None
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=1000-2000 foo"), None, 8192, UNIX_EPOCH),
+            http_parse_range("bytes=1000-2000 foo", None, 8192, UNIX_EPOCH),
             None
         );
 
         assert_eq!(
-            http_parse_range(Some("bytes=foo-bar"), None, 8192, UNIX_EPOCH),
+            http_parse_range("bytes=foo-bar", None, 8192, UNIX_EPOCH),
             None
         );
 
-        assert_eq!(
-            http_parse_range(Some("ABCDEFG"), None, 8192, UNIX_EPOCH),
-            None
-        );
+        assert_eq!(http_parse_range("ABCDEFG", None, 8192, UNIX_EPOCH), None);
 
-        assert_eq!(
-            http_parse_range(Some("bytes="), None, 8192, UNIX_EPOCH),
-            None
-        );
+        assert_eq!(http_parse_range("bytes=", None, 8192, UNIX_EPOCH), None);
 
-        assert_eq!(
-            http_parse_range(Some("bytes=-"), None, 8192, UNIX_EPOCH),
-            None
-        );
+        assert_eq!(http_parse_range("bytes=-", None, 8192, UNIX_EPOCH), None);
 
-        assert_eq!(
-            http_parse_range(Some("bytes=-0"), None, 8192, UNIX_EPOCH),
-            None
-        );
+        assert_eq!(http_parse_range("bytes=-0", None, 8192, UNIX_EPOCH), None);
 
         // TODO: multi range
         assert_eq!(
-            http_parse_range(Some("bytes=0-50, 100-150"), None, 8192, UNIX_EPOCH),
+            http_parse_range("bytes=0-50, 100-150", None, 8192, UNIX_EPOCH),
             None
         );
     }

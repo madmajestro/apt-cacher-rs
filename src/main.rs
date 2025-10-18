@@ -702,24 +702,26 @@ async fn serve_cached_file(
         .modified()
         .expect("platform should support modification time");
 
-    let (http_status, content_start, content_length, content_range, partial) =
-        match http_parse_range(
-            req.headers().get(RANGE).and_then(|val| val.to_str().ok()),
+    let (http_status, content_start, content_length, content_range, partial) = if let Some(range) =
+        req.headers().get(RANGE).and_then(|val| val.to_str().ok())
+        && let Some((content_range, start, content_length)) = http_parse_range(
+            range,
             req.headers()
                 .get(IF_RANGE)
                 .and_then(|val| val.to_str().ok()),
             file_size,
             modification_date,
         ) {
-            Some((content_range, start, content_length)) => (
-                StatusCode::PARTIAL_CONTENT,
-                start,
-                content_length,
-                Some(content_range),
-                true,
-            ),
-            None => (StatusCode::OK, 0, file_size, None, false),
-        };
+        (
+            StatusCode::PARTIAL_CONTENT,
+            start,
+            content_length,
+            Some(content_range),
+            true,
+        )
+    } else {
+        (StatusCode::OK, 0, file_size, None, false)
+    };
 
     #[cfg(feature = "mmap")]
     let content_length: usize = match content_length.try_into() {
