@@ -1267,7 +1267,9 @@ async fn download_file(
 
             if bytes > content_length.upper().get() {
                 warn!(
-                    "More bytes received than expected: {bytes} vs {}",
+                    "More bytes received than expected for file {} from mirror {}: {bytes} vs {}",
+                    conn_details.debname,
+                    conn_details.mirror,
                     content_length.upper()
                 );
                 *status.write().await = ActiveDownloadStatus::Aborted(
@@ -2417,7 +2419,7 @@ fn connect_response(
             .and_then(NonZero::new)
             .map(|p| (a.host().to_string(), p))
     }) else {
-        warn!("Invalid CONNECT address: {}", req.uri());
+        warn_once_or_info!("Invalid CONNECT address: {}", req.uri());
         return quick_response(StatusCode::BAD_REQUEST, "Invalid CONNECT address");
     };
 
