@@ -20,6 +20,7 @@ use crate::APP_VERSION;
 use crate::HumanFmt;
 use crate::ProxyCacheBody;
 use crate::RUNTIMEDETAILS;
+use crate::State;
 use crate::UNCACHEABLES;
 use crate::global_config;
 use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, full, quick_response};
@@ -30,13 +31,13 @@ const WEBUI_DATE_FORMAT: &[FormatItem<'_>] =
 #[must_use]
 pub(crate) async fn serve_web_interface(
     req: Request<Incoming>,
-    database: Database,
+    state: State,
 ) -> Response<ProxyCacheBody> {
     let location = req.uri().path();
     debug!("Requested local web interface resource `{location}`");
 
     match location {
-        "/" => serve_root(database).await,
+        "/" => serve_root(state).await,
         "/logs" => serve_logs(),
         _ => {
             debug!("Invalid local web interface request: {req:?}");
@@ -251,24 +252,24 @@ fn build_uncacheable_table() -> Table {
 }
 
 #[must_use]
-async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
+async fn serve_root(state: State) -> Response<ProxyCacheBody> {
     let start = Instant::now();
 
-    let Ok(html_table_mirrors) = build_mirror_table(&database).await else {
+    let Ok(html_table_mirrors) = build_mirror_table(&state.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
         );
     };
 
-    let Ok(html_table_origins) = build_origin_table(&database).await else {
+    let Ok(html_table_origins) = build_origin_table(&state.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
         );
     };
 
-    let Ok(html_table_clients) = build_client_table(&database).await else {
+    let Ok(html_table_clients) = build_client_table(&state.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
@@ -289,6 +290,8 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
         }
     };
 
+    let active_downloads = state.active_downloads.len();
+
     let html: String = HtmlPage::new()
         .with_title("apt-cacher-rs web interface")
         .with_header(1, "Statistics")
@@ -296,7 +299,7 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
             Container::new(ContainerType::Div)
                 .with_header(2, "Program Details")
                 .with_paragraph(format!(
-                    "Version: {}<br>Start Time: {}<br>Current Time: {}<br>Bind Address: {}<br>Bind Port: {}<br>Database Size: {}",
+                    "Version: {}<br>Start Time: {}<br>Current Time: {}<br>Bind Address: {}<br>Bind Port: {}<br>Database Size: {}<br>Active Downloads: {}",
                     APP_VERSION,
                     rd.start_time
                         .format(WEBUI_DATE_FORMAT)
@@ -307,6 +310,7 @@ async fn serve_root(database: Database) -> Response<ProxyCacheBody> {
                     rd.config.bind_addr,
                     rd.config.bind_port,
                     database_size_fmt,
+                    active_downloads
                 )).with_link("/logs", "Logs"),
         )
         .with_container(

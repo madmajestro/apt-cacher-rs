@@ -2529,7 +2529,7 @@ async fn pre_process_client_request(
                 }
             }
 
-            return serve_web_interface(req, state.database).await;
+            return serve_web_interface(req, state).await;
         };
 
     {
