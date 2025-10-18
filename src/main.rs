@@ -1073,7 +1073,7 @@ impl<'a> Borrow<dyn AsActiveDownloadKeyRef + 'a> for ActiveDownloadKey {
 #[derive(Debug)]
 enum ActiveDownloadStatus {
     Init(tokio::sync::watch::Receiver<()>),
-    Download(PathBuf, ContentLength, tokio::sync::watch::Receiver<u32>),
+    Download(PathBuf, ContentLength, tokio::sync::watch::Receiver<()>),
     Finished(PathBuf),
     Aborted(ProxyCacheError),
 }
@@ -1182,7 +1182,7 @@ async fn download_file(
     status: &Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     input: (Incoming, ContentLength),
     output: (tokio::fs::File, PathBuf),
-    tx: tokio::sync::watch::Sender<u32>,
+    tx: tokio::sync::watch::Sender<()>,
 ) {
     trace!(
         "Starting download of file {} from mirror {} for client {}...",
@@ -1197,7 +1197,6 @@ async fn download_file(
 
     let mut bytes = 0;
     let mut last_send_bytes = 0;
-    let mut send_id = 1;
     let mut connected = true;
     let buf_size = global_config().buffer_size;
 
@@ -1266,15 +1265,14 @@ async fn download_file(
                 return;
             }
 
-            if connected && bytes > buf_size as u64 + last_send_bytes {
-                if let Err(err) = tx.send(send_id) {
+            if connected && bytes > (buf_size as u64 + last_send_bytes) {
+                if let Err(err) = tx.send(()) {
                     error!(
                         "All receivers of watch channel for file {} from mirror {} died:  {err}",
                         conn_details.debname, conn_details.mirror
                     );
                     connected = false;
                 }
-                send_id += 1;
                 last_send_bytes = bytes;
             }
         }
@@ -1414,7 +1412,7 @@ async fn serve_unfinished_file(
     file_path: PathBuf,
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     content_length: ContentLength,
-    mut receiver: tokio::sync::watch::Receiver<u32>,
+    mut receiver: tokio::sync::watch::Receiver<()>,
 ) -> Response<ProxyCacheBody> {
     let md = match file.metadata().await {
         Ok(data) => data,
@@ -2188,7 +2186,7 @@ async fn serve_new_file(
         conn_details.client.ip().to_canonical()
     );
 
-    let (tx, rx) = tokio::sync::watch::channel(0);
+    let (tx, rx) = tokio::sync::watch::channel(());
 
     *status.write().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
     // ignore if there are no receivers
