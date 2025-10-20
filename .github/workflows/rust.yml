@@ -7,7 +7,6 @@ env:
 
 jobs:
   build:
-
     permissions:
       contents: read
 
@@ -15,32 +14,31 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      RUSTFLAGS: '-D warnings'
+      RUSTFLAGS: "-D warnings"
       SQLX_OFFLINE: true
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-    - name: Build (default features)
-      run: cargo build --verbose
+      - name: Build (default features)
+        run: cargo build --verbose
 
-    - name: Build (tls_hyper feature)
-      run: cargo build --verbose --no-default-features --features tls_hyper
+      - name: Build (tls_hyper feature)
+        run: cargo build --verbose --no-default-features --features tls_hyper
 
-    - name: Format
-      run: cargo fmt --all --check
+      - name: Format
+        run: cargo fmt --all --check
 
-    - name: Clippy (default features)
-      run: cargo clippy --all-targets -- -D warnings -D clippy::pedantic -A clippy::needless_continue
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings -D clippy::pedantic -A clippy::needless_continue
 
-    - name: Clippy (tls_hyper features)
-      run: cargo clippy --all-targets --no-default-features --features tls_hyper -- -D warnings -D clippy::pedantic -A clippy::needless_continue
+      - name: Clippy (tls_hyper features)
+        run: cargo clippy --all-targets --no-default-features --features tls_hyper -- -D warnings -D clippy::pedantic -A clippy::needless_continue
 
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Run tests
+        run: cargo test --verbose
 
   spaces-check:
-
     permissions:
       contents: read
 
@@ -48,13 +46,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Spaces check
         run: git diff-tree --check $(git hash-object -t tree /dev/null) HEAD
 
   spellings:
-
     permissions:
       contents: read
 
@@ -62,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install codespell
         run: sudo apt-get install -y codespell
