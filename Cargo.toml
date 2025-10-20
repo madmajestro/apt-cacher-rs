@@ -5,7 +5,6 @@ authors = ["Christian Göttsche <cgzones@googlemail.com>"]
 license = "MIT"
 description = "A caching proxy for Debian style package repositories"
 readme = "README.md"
-homepage = "https://github.com/cgzones/apt-cacher-rs"
 repository = "https://github.com/cgzones/apt-cacher-rs"
 keywords = ["Debian", "proxy", "cache", "deb", "apt"]
 categories = ["caching"]
