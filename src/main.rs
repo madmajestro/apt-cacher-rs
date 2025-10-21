@@ -1654,6 +1654,7 @@ async fn serve_downloading_file(
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
 ) -> Response<ProxyCacheBody> {
     let mut not_found_once = false;
+    let mut init_waited = false;
 
     loop {
         let st = status.read().await;
@@ -1667,9 +1668,15 @@ async fn serve_downloading_file(
                 let mut init_rx = init_rx.clone();
                 drop(st);
 
+                assert!(
+                    !init_waited,
+                    "state should change once a ping is received or the downloading task dropped the sender"
+                );
+
                 // Either the state changed manually by the downloading task,
                 // or the downloading task just dropped the sender.
                 let _ignore = init_rx.changed().await;
+                init_waited = true;
             }
             ActiveDownloadStatus::Finished(path) => {
                 let file = match tokio::fs::File::open(&path).await {
