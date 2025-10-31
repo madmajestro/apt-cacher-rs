@@ -663,7 +663,7 @@ impl Config {
             allowed_proxy_clients: Vec::new(),
             allowed_webif_clients: None,
             https_tunnel_enabled: true,
-            https_tunnel_allowed_ports: vec![nonzero!(443)],
+            https_tunnel_allowed_ports: DEFAULT_HTTPS_TUNNEL_ALLOWED_PORTS.to_vec(),
             https_tunnel_allowed_mirrors: Vec::new(),
             usage_retention_days: DEFAULT_USAGE_RETENTION_DAYS,
             logstore_capacity: DEFAULT_LOGSTORE_CAPACITY,
