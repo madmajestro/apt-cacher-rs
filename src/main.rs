@@ -1,7 +1,4 @@
-#![cfg_attr(
-    test,
-    allow(clippy::map_unwrap_or, clippy::unwrap_used, clippy::too_many_lines)
-)]
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 #![cfg_attr(not(feature = "mmap"), forbid(unsafe_code))]
 
 #[cfg(not(any(feature = "tls_hyper", feature = "tls_rustls")))]
