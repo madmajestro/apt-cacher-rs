@@ -18,16 +18,12 @@ use serde::Deserializer;
 
 #[macro_export]
 macro_rules! nonzero {
-    ($value:literal) => {
-        match NonZero::new($value) {
-            Some(v) => v,
-            None => unreachable!(),
-        }
-    };
     ($exp:expr) => {
-        match NonZero::new($exp) {
-            Some(v) => v,
-            None => unreachable!(),
+        const {
+            match NonZero::new($exp) {
+                Some(v) => v,
+                None => panic!("Value is zero"),
+            }
         }
     };
 }
