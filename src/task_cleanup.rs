@@ -319,10 +319,10 @@ async fn task_cleanup_impl(
         let cache_size = *mg_cache_size;
         let difference = cache_size.abs_diff(actual_cache_size + active_downloading_size);
 
-        /* auto-repair small abnormalities */
+        // Auto-repair small abnormalities
         {
-            const AUTO_REPAIR_THRESHOLD: u64 = 10 * 1024;
-            if difference < AUTO_REPAIR_THRESHOLD {
+            const AUTO_REPAIR_THRESHOLD: u64 = 10 * 1024; // 10 KiB
+            if difference != 0 && difference < AUTO_REPAIR_THRESHOLD {
                 debug!(
                     "Auto-repairing small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
                 );
