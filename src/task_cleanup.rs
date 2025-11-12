@@ -352,7 +352,6 @@ struct CleanupDone {
     bytes_removed: u64,
 }
 
-#[expect(clippy::too_many_lines)]
 async fn cleanup_mirror(
     mirror: MirrorEntry,
     database: Database,

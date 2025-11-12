@@ -1,5 +1,5 @@
-#![cfg_attr(test, allow(clippy::too_many_lines))]
 #![cfg_attr(not(feature = "mmap"), forbid(unsafe_code))]
+#![allow(clippy::too_many_lines)]
 
 #[cfg(not(any(feature = "tls_hyper", feature = "tls_rustls")))]
 compile_error!("Either feature \"tls_hyper\" or \"tls_rustls\" must be enabled for this crate.");
@@ -1195,7 +1195,6 @@ impl ActiveDownloads {
     }
 }
 
-#[expect(clippy::too_many_lines)]
 async fn download_file(
     database: Database,
     conn_details: &ConnectionDetails,
@@ -1428,7 +1427,6 @@ async fn download_file(
 }
 
 #[must_use]
-#[expect(clippy::too_many_lines)]
 async fn serve_unfinished_file(
     conn_details: ConnectionDetails,
     database: Database,
@@ -1781,7 +1779,6 @@ impl std::fmt::Display for ContentLength {
 }
 
 #[must_use]
-#[expect(clippy::too_many_lines)]
 async fn serve_new_file(
     conn_details: ConnectionDetails,
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
@@ -2526,7 +2523,6 @@ async fn pre_process_client_request_wrapper(
 }
 
 #[must_use]
-#[expect(clippy::too_many_lines)]
 async fn pre_process_client_request(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
@@ -3024,7 +3020,6 @@ fn is_timeout(err: &hyper::Error) -> bool {
     })
 }
 
-#[expect(clippy::too_many_lines)]
 async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "tokio_console")]
     console_subscriber::init();
