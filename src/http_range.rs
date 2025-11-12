@@ -105,7 +105,7 @@ pub(crate) fn http_parse_range(
     Some((
         format!("bytes {start}-{end}/{file_size}"),
         start,
-        end + 1 - start,
+        end - start + 1,
     ))
 }
 
