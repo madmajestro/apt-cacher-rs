@@ -127,6 +127,7 @@ use crate::deb_mirror::valid_component;
 use crate::deb_mirror::valid_distribution;
 use crate::deb_mirror::valid_filename;
 use crate::deb_mirror::valid_mirrorname;
+use crate::error::MirrorDownloadRate;
 use crate::error::ProxyCacheError;
 use crate::http_range::http_datetime_to_systemtime;
 use crate::http_range::systemtime_to_http_datetime;
@@ -1085,11 +1086,17 @@ impl<'a> Borrow<dyn AsActiveDownloadKeyRef + 'a> for ActiveDownloadKey {
 }
 
 #[derive(Debug)]
+enum AbortReason {
+    MirrorDownloadRate(MirrorDownloadRate),
+    AlreadyLoggedJustFail,
+}
+
+#[derive(Debug)]
 enum ActiveDownloadStatus {
     Init(tokio::sync::watch::Receiver<()>),
     Download(PathBuf, ContentLength, tokio::sync::watch::Receiver<()>),
     Finished(PathBuf),
-    Aborted(ProxyCacheError),
+    Aborted(AbortReason),
 }
 
 #[derive(Clone, Debug)]
@@ -1231,7 +1238,7 @@ async fn download_file(
                 match err {
                     RateCheckedBodyErr::DownloadRate(download_rate_err) => {
                         *status.write().await = ActiveDownloadStatus::Aborted(
-                            ProxyCacheError::MirrorDownloadRate(error::MirrorDownloadRate {
+                            AbortReason::MirrorDownloadRate(error::MirrorDownloadRate {
                                 download_rate_err,
                                 mirror: conn_details.mirror.clone(),
                                 debname: conn_details.debname.clone(),
@@ -1245,14 +1252,15 @@ async fn download_file(
                             conn_details.debname, conn_details.mirror
                         );
                         *status.write().await =
-                            ActiveDownloadStatus::Aborted(ProxyCacheError::Hyper(herr));
+                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                     }
                     RateCheckedBodyErr::ProxyCache(perr) => {
                         error!(
                             "Error extracting frame from body for file {} from mirror {}:  {perr}",
                             conn_details.debname, conn_details.mirror
                         );
-                        *status.write().await = ActiveDownloadStatus::Aborted(perr);
+                        *status.write().await =
+                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                     }
                 }
 
@@ -1269,15 +1277,15 @@ async fn download_file(
                     conn_details.mirror,
                     content_length.upper()
                 );
-                *status.write().await = ActiveDownloadStatus::Aborted(
-                    ProxyCacheError::ContentTooLarge(content_length, bytes),
-                );
+                *status.write().await =
+                    ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                 return;
             }
 
             if let Err(err) = writer.write_all_buf(&mut chunk).await {
                 error!("Error writing to file `{}`:  {err}", output.1.display());
-                *status.write().await = ActiveDownloadStatus::Aborted(err.into());
+                *status.write().await =
+                    ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                 return;
             }
 
@@ -1301,7 +1309,7 @@ async fn download_file(
 
     if let Err(err) = writer.flush().await {
         error!("Error writing to file `{}`:  {err}", output.1.display());
-        *status.write().await = ActiveDownloadStatus::Aborted(err.into());
+        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
         return;
     }
     drop(writer);
@@ -1328,7 +1336,7 @@ async fn download_file(
             "Failed to create destination directory `{}`:  {err}",
             dest_dir.display()
         );
-        *status.write().await = ActiveDownloadStatus::Aborted(err.into());
+        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
         return;
     }
 
@@ -1386,7 +1394,7 @@ async fn download_file(
                     output.1.display(),
                     dest_path.display()
                 );
-                *locked_status = ActiveDownloadStatus::Aborted(err.into());
+                *locked_status = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
             }
         }
     }
@@ -1514,17 +1522,8 @@ async fn serve_unfinished_file(
                         continue;
                     }
                     ActiveDownloadStatus::Aborted(ref err) => {
-                        #[expect(clippy::wildcard_enum_match_arm)]
                         match err {
-                            ProxyCacheError::ClientDownloadRate(cdr) => {
-                                if let Err(err) = tx
-                                    .send(Err(ChannelBodyError::ClientDownloadRate(*cdr)))
-                                    .await
-                                {
-                                    warn!("Failed to send client download rate:  {err}");
-                                }
-                            }
-                            ProxyCacheError::MirrorDownloadRate(mdr) => {
+                            AbortReason::MirrorDownloadRate(mdr) => {
                                 if let Err(err) = tx
                                     .send(Err(ChannelBodyError::MirrorDownloadRate((*mdr).clone())))
                                     .await
@@ -1532,9 +1531,10 @@ async fn serve_unfinished_file(
                                     warn!("Failed to send mirror download rate:  {err}");
                                 }
                             }
-                            _ => {
-                                warn!(
-                                    "Download of file `{}` aborted, cancelling stream:  {err}",
+                            AbortReason::AlreadyLoggedJustFail => {
+                                // Reason already logged
+                                debug!(
+                                    "Download of file `{}` aborted, cancelling stream",
                                     file_path.display()
                                 );
                             }
@@ -1931,6 +1931,8 @@ async fn serve_new_file(
                 "Proxy request failed to mirror {}:  {err}",
                 conn_details.mirror
             );
+            *status.write().await =
+                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
             state
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
@@ -1982,6 +1984,8 @@ async fn serve_new_file(
                     Ok(r) => r,
                     Err(err) => {
                         warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
+                        *status.write().await =
+                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                         state
                             .active_downloads
                             .remove(&conn_details.mirror, &conn_details.debname);
@@ -2100,6 +2104,7 @@ async fn serve_new_file(
             "Request failed with code {}, got response {fwd_response:?}",
             fwd_response.status()
         );
+        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
         state
             .active_downloads
             .remove(&conn_details.mirror, &conn_details.debname);
@@ -2127,6 +2132,8 @@ async fn serve_new_file(
                 "Could not extract content-length from header for file {} from mirror {}: {fwd_response:?}",
                 conn_details.debname, conn_details.mirror
             );
+            *status.write().await =
+                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
             state
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
@@ -2138,35 +2145,46 @@ async fn serve_new_file(
     };
 
     if let Some(quota) = global_config().disk_quota {
-        let mut mg_cache_size = RUNTIMEDETAILS
-            .get()
-            .expect("global is set in main()")
-            .cache_size
-            .lock();
-        let quota_reached = content_length
-            .upper()
-            .checked_add(*mg_cache_size)
-            .is_some_and(|s| s > quota);
+        let fail = {
+            let mut mg_cache_size = RUNTIMEDETAILS
+                .get()
+                .expect("global is set in main()")
+                .cache_size
+                .lock();
+            let quota_reached = content_length
+                .upper()
+                .checked_add(*mg_cache_size)
+                .is_some_and(|s| s > quota);
 
-        if quota_reached {
-            let cache_size = *mg_cache_size;
-            drop(mg_cache_size);
-            warn!(
-                "Disk quota reached: file={} cache_size={} content_length={:?} quota={}",
-                conn_details.debname, cache_size, content_length, quota
-            );
+            if quota_reached {
+                let cache_size = *mg_cache_size;
+                drop(mg_cache_size);
+                warn!(
+                    "Disk quota reached: file={} cache_size={} content_length={:?} quota={}",
+                    conn_details.debname, cache_size, content_length, quota
+                );
+
+                true
+            } else {
+                *mg_cache_size = mg_cache_size
+                    .checked_add(content_length.upper().get())
+                    .expect("should not overflow by previous check");
+                *mg_cache_size = mg_cache_size
+                    .checked_sub(prev_file_size)
+                    .expect("size should not underflow");
+
+                false
+            }
+        };
+
+        if fail {
+            *status.write().await =
+                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
             state
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Disk quota reached");
         }
-
-        *mg_cache_size = mg_cache_size
-            .checked_add(content_length.upper().get())
-            .expect("should not overflow by previous check");
-        *mg_cache_size = mg_cache_size
-            .checked_sub(prev_file_size)
-            .expect("size should not underflow");
     }
 
     let (_parts, body) = fwd_response.into_parts();
@@ -2197,6 +2215,8 @@ async fn serve_new_file(
                 *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
             }
 
+            *status.write().await =
+                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
             state
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);

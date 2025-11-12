@@ -128,7 +128,6 @@ impl From<std::string::FromUtf8Error> for ProxyCacheError {
 impl From<ChannelBodyError> for ProxyCacheError {
     fn from(value: ChannelBodyError) -> Self {
         match value {
-            ChannelBodyError::ClientDownloadRate(cdr) => Self::ClientDownloadRate(cdr),
             ChannelBodyError::MirrorDownloadRate(mdr) => Self::MirrorDownloadRate(mdr),
         }
     }

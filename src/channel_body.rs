@@ -3,7 +3,6 @@ use hyper::body::{Body, Frame, SizeHint};
 use crate::{ContentLength, ProxyCacheError, error};
 
 pub(crate) enum ChannelBodyError {
-    ClientDownloadRate(error::ClientDownloadRate),
     MirrorDownloadRate(error::MirrorDownloadRate),
 }
 
