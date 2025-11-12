@@ -11,7 +11,7 @@ use http_body_util::{BodyExt, Empty};
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use log::{debug, error, info, trace, warn};
 use memfd::MemfdOptions;
-use tokio::io::{AsyncBufReadExt, BufWriter};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufWriter};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::{
@@ -94,47 +94,36 @@ impl PackageFormat {
 
         let buffer_size = global_config().buffer_size;
 
-        let file_reader = tokio::io::BufReader::with_capacity(buffer_size, file);
+        let mut file_reader = tokio::io::BufReader::with_capacity(buffer_size, file);
 
-        macro_rules! process_lines {
-            ($e: expr) => {
-                let mut lines = $e;
-                while let Some(line) = lines.next_line().await.map_err(|err| {
-                    error!("Error reading in-memory file `{name}`:  {err}");
-                    err
-                })? {
-                    let Some(filepath) = line.strip_prefix("Filename: ") else {
-                        continue;
-                    };
-
-                    let Some(filename) = Path::new(filepath).file_name() else {
-                        continue;
-                    };
-
-                    if file_list.remove(filename).is_some() && file_list.is_empty() {
-                        break;
-                    }
-                }
-            };
-        }
-
-        match self {
-            Self::Raw => {
-                process_lines!(file_reader.lines());
-            }
+        let reader: &mut (dyn AsyncBufRead + Unpin + Send) = match self {
+            Self::Raw => &mut file_reader,
             Self::Gz => {
                 let decoder = async_compression::tokio::bufread::GzipDecoder::new(file_reader);
 
-                let reader = tokio::io::BufReader::with_capacity(buffer_size, decoder);
-
-                process_lines!(reader.lines());
+                &mut tokio::io::BufReader::with_capacity(buffer_size, decoder)
             }
             Self::Xz => {
                 let decoder = async_compression::tokio::bufread::XzDecoder::new(file_reader);
 
-                let reader = tokio::io::BufReader::with_capacity(buffer_size, decoder);
+                &mut tokio::io::BufReader::with_capacity(buffer_size, decoder)
+            }
+        };
 
-                process_lines!(reader.lines());
+        while let Some(line) = reader.lines().next_line().await.map_err(|err| {
+            error!("Error reading in-memory file `{name}`:  {err}");
+            err
+        })? {
+            let Some(filepath) = line.strip_prefix("Filename: ") else {
+                continue;
+            };
+
+            let Some(filename) = Path::new(filepath).file_name() else {
+                continue;
+            };
+
+            if file_list.remove(filename).is_some() && file_list.is_empty() {
+                break;
             }
         }
 
