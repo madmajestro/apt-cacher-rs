@@ -2856,9 +2856,19 @@ async fn pre_process_client_request(
         let mut uncacheables = UNCACHEABLES.get().expect("Initialized in main()").write();
 
         // always delete to keep recent entries fresh
-        uncacheables.retain(|(host, path)| *host != requested_host || path != requested_path);
+        if let Some((idx, (_h, _p))) = uncacheables
+            .iter()
+            .enumerate()
+            .find(|(_idx, (h, p))| *h == requested_host && *p == requested_path)
+        {
+            let (mut host, mut path) = uncacheables.remove(idx).expect("entry exists");
+            host.clone_from(&requested_host);
+            requested_path.clone_into(&mut path);
 
-        uncacheables.push((requested_host.clone(), requested_path.to_owned()));
+            uncacheables.push((host, path));
+        } else {
+            uncacheables.push((requested_host.clone(), requested_path.to_owned()));
+        }
     }
 
     if req.body().size_hint().exact() != Some(0) {

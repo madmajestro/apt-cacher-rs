@@ -57,6 +57,11 @@ impl<T> RingBuffer<T> {
     pub(crate) fn retain(&mut self, f: impl FnMut(&T) -> bool) {
         self.inner.retain(f);
     }
+
+    #[must_use]
+    pub(crate) fn remove(&mut self, index: usize) -> Option<T> {
+        self.inner.remove(index)
+    }
 }
 
 #[derive(Debug)]
