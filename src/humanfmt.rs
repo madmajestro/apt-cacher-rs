@@ -78,7 +78,44 @@ impl std::fmt::Display for HumanFmt {
                     return f.write_fmt(format_args!("{time:.0$}ms", precision(time)));
                 }
                 let time = time / 1000.0;
-                f.write_fmt(format_args!("{time:.0$}s", precision(time)))
+                if time < 600.0 {
+                    return f.write_fmt(format_args!("{time:.0$}s", precision(time)));
+                }
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let time = time as u64;
+                let secs = time % 60;
+                let time = time / 60;
+                let mins = time % 60;
+                let time = time / 60;
+                let hours = time % 24;
+                let time = time / 24;
+                let days = time;
+
+                let days_fmt = if days != 0 {
+                    format_args!("{days}d")
+                } else {
+                    format_args!("")
+                };
+
+                let hours_fmt = if hours != 0 {
+                    format_args!("{hours}h")
+                } else {
+                    format_args!("")
+                };
+
+                let mins_fmt = if mins != 0 {
+                    format_args!("{mins}m")
+                } else {
+                    format_args!("")
+                };
+
+                let secs_fmt = if secs != 0 {
+                    format_args!("{secs}s")
+                } else {
+                    format_args!("")
+                };
+
+                f.write_fmt(format_args!("{days_fmt}{hours_fmt}{mins_fmt}{secs_fmt}"))
             }
         }
     }
@@ -150,8 +187,20 @@ mod tests {
             "248s"
         );
         assert_eq!(
+            format!("{}", HumanFmt::Time(Duration::from_secs(601))),
+            "10m1s"
+        );
+        assert_eq!(
+            format!("{}", HumanFmt::Time(Duration::from_secs(86401))),
+            "1d1s"
+        );
+        assert_eq!(
+            format!("{}", HumanFmt::Time(Duration::from_secs(86460))),
+            "1d1m"
+        );
+        assert_eq!(
             format!("{}", HumanFmt::Time(Duration::from_nanos(u64::MAX))),
-            "18446744074s"
+            "213503d23h34m33s"
         );
     }
 }

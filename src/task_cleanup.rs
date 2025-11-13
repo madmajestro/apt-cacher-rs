@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     io::ErrorKind,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::LazyLock,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -24,7 +24,10 @@ use crate::{
     info_once, request_with_retry, task_cache_scan,
 };
 
-async fn body_to_file(body: &mut Incoming, file: tokio::fs::File) -> Result<(), ProxyCacheError> {
+async fn body_to_file(
+    body: &mut Incoming,
+    file: tokio::fs::File,
+) -> Result<tokio::fs::File, ProxyCacheError> {
     let mut writer = BufWriter::with_capacity(global_config().buffer_size, file);
 
     while let Some(next) = body.frame().await {
@@ -36,7 +39,11 @@ async fn body_to_file(body: &mut Incoming, file: tokio::fs::File) -> Result<(), 
 
     writer.flush().await?;
 
-    Ok(())
+    let mut file = writer.into_inner();
+
+    file.rewind().await?;
+
+    Ok(file)
 }
 
 async fn collect_cached_files(
@@ -53,9 +60,7 @@ async fn collect_cached_files(
     while let Some(entry) = host_dir.next_entry().await? {
         let path = entry.path();
 
-        if let Some(ext) = path.extension()
-            && ext == "deb"
-        {
+        if path.extension().is_some_and(|ext| ext == "deb") {
             ret.insert(entry.file_name(), path);
         }
     }
@@ -63,6 +68,7 @@ async fn collect_cached_files(
     Ok(ret)
 }
 
+#[derive(Clone, Copy)]
 enum PackageFormat {
     Raw,
     Gz,
@@ -71,7 +77,7 @@ enum PackageFormat {
 
 impl PackageFormat {
     #[must_use]
-    const fn extension(&self) -> &'static str {
+    const fn extension(self) -> &'static str {
         match self {
             Self::Raw => "",
             Self::Gz => ".gz",
@@ -81,17 +87,12 @@ impl PackageFormat {
 
     // TODO: verify hashes
     async fn reduce_file_list(
-        &self,
-        mut file: tokio::fs::File,
-        name: &str,
+        self,
+        file: tokio::fs::File,
+        filename: &str,
         file_list: &mut HashMap<OsString, PathBuf>,
     ) -> Result<(), ProxyCacheError> {
         debug_assert!(!file_list.is_empty());
-
-        file.rewind().await.map_err(|err| {
-            error!("Error rewinding in-memory file `{name}`:  {err}");
-            err
-        })?;
 
         let buffer_size = global_config().buffer_size;
 
@@ -111,24 +112,31 @@ impl PackageFormat {
             }
         };
 
-        while let Some(line) = reader.lines().next_line().await.map_err(|err| {
-            error!("Error reading in-memory file `{name}`:  {err}");
-            err
-        })? {
-            let Some(filepath) = line.strip_prefix("Filename: ") else {
-                continue;
-            };
+        let mut buffer = String::with_capacity(128);
+        loop {
+            buffer.clear();
+            match reader.read_line(&mut buffer).await {
+                Ok(0) => return Ok(()), // EOF
+                Err(err) => {
+                    error!("Error reading in-memory file `{filename}`:  {err}");
+                    return Err(err.into());
+                }
+                Ok(_bytes_read) => {
+                    let Some(filepath) = buffer.strip_prefix("Filename: ") else {
+                        continue;
+                    };
 
-            let Some(filename) = Path::new(filepath).file_name() else {
-                continue;
-            };
+                    let Some(filename) = Path::new(filepath).file_name() else {
+                        continue;
+                    };
 
-            if file_list.remove(filename).is_some() && file_list.is_empty() {
-                break;
+                    if file_list.remove(filename).is_some() && file_list.is_empty() {
+                        // No files left to potentially remove
+                        return Ok(());
+                    }
+                }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -138,32 +146,38 @@ enum GetPackageError {
 }
 
 async fn get_package_file(
-    uri: &str,
-    https_client: Client,
+    base_uri: &str,
+    https_client: &Client,
 ) -> Result<(Response<Incoming>, PackageFormat), GetPackageError> {
+    let mut uri_buffer = String::with_capacity(base_uri.len() + 3);
+
     for pkgfmt in [PackageFormat::Xz, PackageFormat::Gz, PackageFormat::Raw] {
-        let uri_tmp = uri.to_string() + pkgfmt.extension();
+        uri_buffer.clear();
+        uri_buffer.push_str(base_uri);
+        uri_buffer.push_str(pkgfmt.extension());
+        let uri = uri_buffer.as_str();
 
         let mut tries = 0;
         let response = loop {
             const MAX_TRIES: u32 = 4;
             let req = Request::builder()
                 .method(Method::GET)
-                .uri(&uri_tmp)
+                .uri(uri)
                 .body(Empty::new())
                 .expect("Request should be valid");
-            match request_with_retry(&https_client, req).await {
+            match request_with_retry(https_client, req).await {
                 Ok(r) => break r,
                 Err(err) => {
                     // TODO: retry based on error kind
                     // TODO: add error kind to hyper_util::client::legacy::client::Error
                     debug!(
-                        "Failed to retrieve {uri_tmp} ({}/{}):  {err}",
-                        tries + 1,
-                        MAX_TRIES
+                        "Failed to retrieve {uri} for cleanup ({}/{MAX_TRIES}):  {err}",
+                        tries + 1
                     );
                     if tries >= MAX_TRIES {
-                        error!("Failed to retrieve {uri_tmp} after {MAX_TRIES} retries:  {err}");
+                        error!(
+                            "Failed to retrieve {uri} for cleanup after {MAX_TRIES} retries:  {err}"
+                        );
                         return Err(GetPackageError::HyperUtil(err));
                     }
                     tries += 1;
@@ -174,13 +188,13 @@ async fn get_package_file(
         };
 
         if response.status() == StatusCode::NOT_FOUND {
-            debug!("Request {uri_tmp} not found");
+            debug!("Cleanup request {uri} not found");
             continue;
         }
 
         if response.status() != StatusCode::OK {
             warn!(
-                "Request {uri_tmp} failed with status code {}:  {response:?}",
+                "Cleanup request {uri} failed with status code {}:  {response:?}",
                 response.status(),
             );
             return Err(GetPackageError::Http(response.status()));
@@ -197,9 +211,10 @@ pub(crate) async fn task_cleanup(
     https_client: Client,
     active_downloads: ActiveDownloads,
 ) -> Result<(), ProxyCacheError> {
-    static TASK_ACTIVE: OnceLock<parking_lot::Mutex<bool>> = OnceLock::new();
+    static TASK_ACTIVE: LazyLock<parking_lot::Mutex<bool>> =
+        LazyLock::new(|| parking_lot::Mutex::new(false));
 
-    let mutex = TASK_ACTIVE.get_or_init(|| parking_lot::Mutex::new(false));
+    let mutex = &*TASK_ACTIVE;
 
     {
         let mut val = mutex.lock();
@@ -273,7 +288,7 @@ async fn task_cleanup_impl(
         let task_result = match task.await {
             Ok(tr) => tr,
             Err(err) => {
-                error!("Error joining task:  {err}");
+                error!("Error joining cleanup task:  {err}");
                 continue;
             }
         };
@@ -338,8 +353,8 @@ async fn task_cleanup_impl(
     }
 
     info!(
-        "Finished cleanup task in {}s: retained {} files, removed {} files of size {}",
-        start.elapsed().as_secs(),
+        "Finished cleanup task in {}: retained {} files, removed {} files of size {}",
+        HumanFmt::Time(start.elapsed()),
         files_retained,
         files_removed,
         HumanFmt::Size(bytes_removed)
@@ -426,9 +441,7 @@ async fn cleanup_mirror_deb_files(
     }
 
     for origin in &active_origins {
-        let (mut response, pkgfmt) = match get_package_file(&origin.uri(), https_client.clone())
-            .await
-        {
+        let (mut response, pkgfmt) = match get_package_file(&origin.uri(), &https_client).await {
             Ok(r) => r,
             Err(GetPackageError::Http(status)) if status == StatusCode::NOT_FOUND => {
                 warn!(
@@ -454,36 +467,45 @@ async fn cleanup_mirror_deb_files(
             }
         };
 
-        let name = origin.distribution.clone()
-            + "_"
-            + &origin.component
-            + "_"
-            + &origin.architecture
-            + "_"
-            + "packages"
-            + pkgfmt.extension();
+        let memfdname = {
+            let total_len = origin.distribution.len()
+                + origin.component.len()
+                + origin.architecture.len()
+                + pkgfmt.extension().len()
+                + 3
+                + "packages".len();
+            let mut buffer = String::with_capacity(total_len);
 
-        let memfd = MemfdOptions::new().create(&name).map_err(|err| {
-            error!("Error creating in-memory file `{name}`:  {err}");
+            buffer.push_str(&origin.distribution);
+            buffer.push('_');
+            buffer.push_str(&origin.component);
+            buffer.push('_');
+            buffer.push_str(&origin.architecture);
+            buffer.push('_');
+            buffer.push_str("packages");
+            buffer.push_str(pkgfmt.extension());
+
+            debug_assert_eq!(buffer.len(), total_len);
+
+            buffer
+        };
+
+        let memfd = MemfdOptions::new().create(&memfdname).map_err(|err| {
+            error!("Error creating in-memory file `{memfdname}`:  {err}");
             ProxyCacheError::Memfd(err)
         })?;
 
         let file = tokio::fs::File::from_std(memfd.into_file());
 
-        let file_copy = file.try_clone().await.map_err(|err| {
-            error!("Error duplicating in-memory file `{name}`:  {err}");
-            err
-        })?;
-
-        body_to_file(response.body_mut(), file_copy)
+        let file = body_to_file(response.body_mut(), file)
             .await
             .map_err(|err| {
-                error!("Error writing response to in-memory file `{name}`:  {err}");
+                error!("Error writing response to in-memory file `{memfdname}`:  {err}");
                 err
             })?;
 
         pkgfmt
-            .reduce_file_list(file, &name, &mut cached_files)
+            .reduce_file_list(file, &memfdname, &mut cached_files)
             .await?;
 
         if cached_files.is_empty() {
@@ -543,10 +565,10 @@ async fn cleanup_mirror_deb_files(
                 && existing_for < KEEP_SPAN
             {
                 debug!(
-                    "Keeping unreferenced file `{}` since it is to new ({}s, threshold={}s)",
+                    "Keeping unreferenced file `{}` since it is to new ({}, threshold={})",
                     path.display(),
-                    existing_for.as_secs(),
-                    KEEP_SPAN.as_secs()
+                    HumanFmt::Time(existing_for),
+                    HumanFmt::Time(KEEP_SPAN)
                 );
                 continue;
             }
@@ -607,8 +629,8 @@ async fn cleanup_mirror_byhash_files(
         Ok(d) => d,
         Err(err) if err.kind() == ErrorKind::NotFound => {
             debug!(
-                "Directory {} not found. Cleanup skipped.",
-                mirror_byhash_path.to_string_lossy()
+                "Directory `{}` not found. Cleanup skipped.",
+                mirror_byhash_path.display()
             );
             return Ok(CleanupDone {
                 mirror: Mirror { host, path },
@@ -619,8 +641,8 @@ async fn cleanup_mirror_byhash_files(
         }
         Err(err) => {
             error!(
-                "Error traversing directory {}: {}",
-                mirror_byhash_path.to_string_lossy(),
+                "Error traversing directory `{}`:  {}",
+                mirror_byhash_path.display(),
                 err
             );
             return Err(ProxyCacheError::Io(err));
@@ -656,7 +678,7 @@ async fn cleanup_mirror_byhash_files(
             Ok(x) => x,
             Err(err) => {
                 warn!(
-                    "Failed to compute modification timespan for file `{}`: {err}",
+                    "Failed to compute modification timespan for file `{}`:  {err}",
                     path.display()
                 );
                 continue;
@@ -681,7 +703,7 @@ async fn cleanup_mirror_byhash_files(
         );
 
         if let Err(err) = tokio::fs::remove_file(&path).await {
-            error!("Error removing file `{}`: {err}", path.display());
+            error!("Error removing file `{}`:  {err}", path.display());
             continue;
         }
 
