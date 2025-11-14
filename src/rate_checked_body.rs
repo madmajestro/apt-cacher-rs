@@ -2,7 +2,7 @@ use std::{fmt::Debug, num::NonZero, pin::Pin};
 
 use coarsetime::{Duration, Instant};
 use hyper::body::{Body, Frame, SizeHint};
-use log::warn;
+use log::debug;
 
 use crate::{ProxyCacheError, nonzero, ringbuffer::SumRingBuffer};
 
@@ -30,8 +30,8 @@ impl RateChecker {
         let elapsed_secs = elapsed.as_secs();
         if elapsed_secs >= 1 {
             if elapsed_secs > 1 {
-                warn!(
-                    "RateChecker: more than 1 second elapsed since last poll ({}s)",
+                debug!(
+                    "RateChecker: more than 1 second elapsed since last poll ({:.2}s)",
                     elapsed.as_f64()
                 );
                 for _ in 1..elapsed_secs {
