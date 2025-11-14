@@ -49,7 +49,9 @@ pub(crate) async fn task_cache_scan(database: Database) -> Result<u64, ProxyCach
             return Err(ProxyCacheError::Io(err));
         }
     } {
-        if let Ok(mdata) = entry.metadata().await {
+        if let Ok(mdata) = entry.metadata().await
+            && !mdata.is_dir()
+        {
             cache_size += mdata.len();
         }
 
@@ -134,13 +136,17 @@ async fn scan_mirror_dir(host: &DirEntry, mirror: &MirrorEntry) -> u64 {
             }
         };
 
-        dir_size += mdata.len();
+        let file_type = mdata.file_type();
 
-        if mdata.file_type().is_file() && file_path.extension() == Some(OsStr::new("deb")) {
+        if !file_type.is_dir() {
+            dir_size += mdata.len();
+        }
+
+        if file_type.is_file() && file_path.extension() == Some(OsStr::new("deb")) {
             continue;
         }
 
-        if mdata.file_type().is_dir() && entry.file_name() == "dists" {
+        if file_type.is_dir() && entry.file_name() == "dists" {
             dir_size += scan_sub_dir(entry).await;
             continue;
         }
@@ -202,9 +208,13 @@ async fn scan_sub_dir(entry: DirEntry) -> u64 {
             }
         };
 
-        dir_size += mdata.len();
+        let file_type = mdata.file_type();
 
-        if mdata.file_type().is_file() {
+        if !file_type.is_dir() {
+            dir_size += mdata.len();
+        }
+
+        if file_type.is_file() {
             continue;
         }
 

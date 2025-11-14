@@ -303,19 +303,16 @@ async fn task_cleanup_impl(
             .expect("global set in main")
             .cache_size
             .lock();
+        let mut csize = *mg_cache_size;
 
-        match mg_cache_size.checked_sub(bytes_removed) {
-            Some(val) => *mg_cache_size = val,
+        match csize.checked_sub(bytes_removed) {
+            Some(val) => csize = val,
             None => {
-                error!(
-                    "Cache size corruption: current={}, removed={}",
-                    *mg_cache_size, bytes_removed
-                );
+                error!("Cache size corruption: current={csize}, removed={bytes_removed}");
             }
         }
 
-        let cache_size = *mg_cache_size;
-        let difference = cache_size.abs_diff(actual_cache_size + active_downloading_size);
+        let difference = csize.abs_diff(actual_cache_size + active_downloading_size);
 
         // Auto-repair small abnormalities
         {
@@ -325,16 +322,16 @@ async fn task_cleanup_impl(
                     *mg_cache_size = actual_cache_size + active_downloading_size;
                     drop(mg_cache_size);
                     debug!(
-                        "Auto-repaired small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
+                        "Auto-repaired small cache size difference of {difference} (cache_size={csize}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
                     );
                 } else {
                     warn!(
-                        "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}; size difference: {difference}"
+                        "actual cache size: {actual_cache_size}; stored cache size: {csize}; active download size: {active_downloading_size}; size difference: {difference}"
                     );
                 }
             } else {
                 debug!(
-                    "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}"
+                    "actual cache size: {actual_cache_size}; stored cache size: {csize}; active download size: {active_downloading_size}"
                 );
             }
         }

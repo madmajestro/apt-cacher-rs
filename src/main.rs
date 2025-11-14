@@ -1384,6 +1384,11 @@ async fn download_file(
                             "should not download more bytes than announced via ContentLength",
                         );
                     if diff != 0 {
+                        trace!(
+                            "Adjusting cache size by {diff} for downloaded file `{}`",
+                            dest_path.display()
+                        );
+
                         let mut mg_cache_size = RUNTIMEDETAILS
                             .get()
                             .expect("global is set in main()")
@@ -2157,27 +2162,39 @@ async fn serve_new_file(
                 .expect("global is set in main()")
                 .cache_size
                 .lock();
+            let mut csize = *mg_cache_size;
             let quota_reached = content_length
                 .upper()
-                .checked_add(*mg_cache_size)
-                .is_some_and(|s| s > quota);
+                .checked_add(csize)
+                .is_none_or(|sum| sum > quota);
 
             if quota_reached {
-                let cache_size = *mg_cache_size;
                 drop(mg_cache_size);
                 warn!(
                     "Disk quota reached: file={} cache_size={} content_length={:?} quota={}",
-                    conn_details.debname, cache_size, content_length, quota
+                    conn_details.debname, csize, content_length, quota
                 );
 
                 true
             } else {
-                *mg_cache_size = mg_cache_size
+                trace!(
+                    "Adjusting cache size for file {} to be downloaded by {} minus previous file size {prev_file_size}",
+                    conn_details.debname,
+                    content_length.upper().get()
+                );
+
+                csize = csize
                     .checked_add(content_length.upper().get())
                     .expect("should not overflow by previous check");
-                *mg_cache_size = mg_cache_size
-                    .checked_sub(prev_file_size)
-                    .expect("size should not underflow");
+                match csize.checked_sub(prev_file_size) {
+                    Some(val) => csize = val,
+                    None => {
+                        error!(
+                            "Cache size corruption: current={csize} previous_file_size={prev_file_size}"
+                        );
+                    }
+                }
+                *mg_cache_size = csize;
 
                 false
             }
@@ -2212,13 +2229,23 @@ async fn serve_new_file(
             );
 
             {
+                trace!(
+                    "Adjusting cache size for file {} failed to be downloaded by {} plus previous file size {prev_file_size}",
+                    conn_details.debname,
+                    content_length.upper().get()
+                );
+
                 let mut mg_cache_size = RUNTIMEDETAILS
                     .get()
                     .expect("global is set in main()")
                     .cache_size
                     .lock();
-
-                *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
+                let mut csize = *mg_cache_size;
+                csize = csize.saturating_sub(content_length.upper().get());
+                csize = csize
+                    .checked_add(prev_file_size)
+                    .expect("size should not overflow");
+                *mg_cache_size = csize;
             }
 
             *status.write().await =
@@ -2263,13 +2290,23 @@ async fn serve_new_file(
             let ads = st.read().await;
             assert!(!matches!(*ads, ActiveDownloadStatus::Init(_)));
             if !matches!(*(ads), ActiveDownloadStatus::Finished(_)) {
+                trace!(
+                    "Adjusting cache size for file {} not finished downloading by {} plus previous file size {prev_file_size}",
+                    cd.debname,
+                    content_length.upper().get()
+                );
+
                 let mut mg_cache_size = RUNTIMEDETAILS
                     .get()
                     .expect("global is set in main()")
                     .cache_size
                     .lock();
-
-                *mg_cache_size = mg_cache_size.saturating_sub(content_length.upper().get());
+                let mut csize = *mg_cache_size;
+                csize = csize.saturating_sub(content_length.upper().get());
+                csize = csize
+                    .checked_add(prev_file_size)
+                    .expect("size should not overflow");
+                *mg_cache_size = csize;
             }
         }
 
@@ -3161,8 +3198,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let rd = RUNTIMEDETAILS.get().expect("global set in main()");
 
             {
-                let mut mg = rd.cache_size.lock();
-                *mg = cache_size;
+                *rd.cache_size.lock() = cache_size;
             }
 
             let disk_quota = rd.config.disk_quota;
