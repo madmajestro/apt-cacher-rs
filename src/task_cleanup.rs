@@ -320,26 +320,23 @@ async fn task_cleanup_impl(
         // Auto-repair small abnormalities
         {
             const AUTO_REPAIR_THRESHOLD: u64 = 10 * 1024; // 10 KiB
-            if difference != 0 && difference < AUTO_REPAIR_THRESHOLD {
+            if difference != 0 {
+                if difference < AUTO_REPAIR_THRESHOLD {
+                    *mg_cache_size = actual_cache_size + active_downloading_size;
+                    drop(mg_cache_size);
+                    debug!(
+                        "Auto-repaired small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
+                    );
+                } else {
+                    warn!(
+                        "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}; size difference: {difference}"
+                    );
+                }
+            } else {
                 debug!(
-                    "Auto-repairing small cache size difference of {difference} (cache_size={cache_size}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
+                    "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}"
                 );
-                *mg_cache_size = actual_cache_size + active_downloading_size;
             }
-        }
-
-        drop(mg_cache_size);
-
-        if difference == 0 {
-            debug!(
-                "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}",
-            );
-        } else {
-            // TODO: check for inconsistencies and repair
-
-            warn!(
-                "actual cache size: {actual_cache_size}; stored cache size: {cache_size}; active download size: {active_downloading_size}; size difference: {difference}",
-            );
         }
     }
 
