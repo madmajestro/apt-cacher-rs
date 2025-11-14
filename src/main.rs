@@ -967,6 +967,7 @@ fn serve_cached_file_response(
     response
 }
 
+#[derive(Clone)]
 struct AppState {
     database: Database,
     https_client: Client,
@@ -2394,7 +2395,7 @@ async fn tunnel(
 }
 
 #[must_use]
-async fn process_cache_request(
+pub(crate) async fn process_cache_request(
     conn_details: ConnectionDetails,
     req: Request<Empty<()>>,
     volatile: bool,
@@ -3241,16 +3242,18 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut cleanup_interval =
         tokio::time::interval_at(first_cleanup, Duration::from_secs(24 * 60 * 60)); /* every 24h */
 
+    let appstate = AppState {
+        database,
+        https_client,
+        active_downloads,
+    };
+
     loop {
         trace!(
             "Active downloads ({}):  {:?}",
-            active_downloads.len(),
-            active_downloads
+            appstate.active_downloads.len(),
+            appstate.active_downloads
         );
-
-        let db = database.clone();
-        let ht = https_client.clone();
-        let ad = active_downloads.clone();
 
         let next = tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -3263,8 +3266,9 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             },
             _ = cleanup_interval.tick() => {
                 info!("Daily cleanup issued...");
+                let appstate = appstate.clone();
                 tokio::task::spawn( async move {
-                    if let Err(err) = task_cleanup(db, ht, ad).await {
+                    if let Err(err) = task_cleanup(&appstate).await {
                         error!("Error performing cleanup task:  {err}");
                     }
                 });
@@ -3273,8 +3277,9 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ = usr1_signal.recv() => {
                 info!("SIGUSR1 received, issuing cleanup...");
                 cleanup_interval.reset();
+                let appstate = appstate.clone();
                 tokio::task::spawn( async move {
-                    if let Err(err) = task_cleanup(db, ht, ad).await {
+                    if let Err(err) = task_cleanup(&appstate).await {
                         error!("Error performing cleanup task:  {err}");
                     }
                 });
@@ -3291,20 +3296,13 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("New client connection from {}", client.ip().to_canonical());
         let client_start = Instant::now();
 
+        let appstate = appstate.clone();
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     TokioIo::new(stream),
                     service_fn(move |req| {
-                        pre_process_client_request_wrapper(
-                            client,
-                            req,
-                            AppState {
-                                https_client: ht.clone(),
-                                database: db.clone(),
-                                active_downloads: ad.clone(),
-                            },
-                        )
+                        pre_process_client_request_wrapper(client, req, appstate.clone())
                     }),
                 )
                 .with_upgrades()

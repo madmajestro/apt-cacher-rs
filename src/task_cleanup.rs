@@ -2,30 +2,31 @@ use std::{
     collections::HashMap,
     ffi::OsString,
     io::ErrorKind,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
     sync::LazyLock,
     time::{Duration, Instant, SystemTime},
 };
 
 use http_body_util::{BodyExt, Empty};
-use hyper::{Method, Request, Response, StatusCode, body::Incoming};
+use hyper::{Method, Request, Response, StatusCode, header::CACHE_CONTROL};
 use log::{debug, error, info, trace, warn};
 use memfd::MemfdOptions;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufWriter};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::{
-    ActiveDownloads, Client, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
+    AppState, ConnectionDetails, ProxyCacheBody, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
     config::DomainName,
-    database::Database,
+    database::OriginEntry,
     deb_mirror::{Mirror, UriFormat},
     global_config,
     humanfmt::HumanFmt,
-    info_once, request_with_retry, task_cache_scan,
+    info_once, process_cache_request, task_cache_scan,
 };
 
 async fn body_to_file(
-    body: &mut Incoming,
+    body: &mut ProxyCacheBody,
     file: tokio::fs::File,
 ) -> Result<tokio::fs::File, ProxyCacheError> {
     let mut writer = BufWriter::with_capacity(global_config().buffer_size, file);
@@ -140,52 +141,43 @@ impl PackageFormat {
     }
 }
 
-enum GetPackageError {
-    Http(StatusCode),
-    HyperUtil(hyper_util::client::legacy::Error),
-}
-
 async fn get_package_file(
-    base_uri: &str,
-    https_client: &Client,
-) -> Result<(Response<Incoming>, PackageFormat), GetPackageError> {
+    mirror: &Mirror,
+    origin: &OriginEntry,
+    appstate: &AppState,
+) -> Result<(Response<ProxyCacheBody>, PackageFormat), StatusCode> {
+    let base_uri = origin.uri();
+    let distribution = &origin.distribution;
+    let component = &origin.component;
+    let architecture = &origin.architecture;
+
     let mut uri_buffer = String::with_capacity(base_uri.len() + 3);
 
     for pkgfmt in [PackageFormat::Xz, PackageFormat::Gz, PackageFormat::Raw] {
         uri_buffer.clear();
-        uri_buffer.push_str(base_uri);
+        uri_buffer.push_str(&base_uri);
         uri_buffer.push_str(pkgfmt.extension());
         let uri = uri_buffer.as_str();
 
-        let mut tries = 0;
-        let response = loop {
-            const MAX_TRIES: u32 = 4;
-            let req = Request::builder()
-                .method(Method::GET)
-                .uri(uri)
-                .body(Empty::new())
-                .expect("Request should be valid");
-            match request_with_retry(https_client, req).await {
-                Ok(r) => break r,
-                Err(err) => {
-                    // TODO: retry based on error kind
-                    // TODO: add error kind to hyper_util::client::legacy::client::Error
-                    debug!(
-                        "Failed to retrieve {uri} for cleanup ({}/{MAX_TRIES}):  {err}",
-                        tries + 1
-                    );
-                    if tries >= MAX_TRIES {
-                        error!(
-                            "Failed to retrieve {uri} for cleanup after {MAX_TRIES} retries:  {err}"
-                        );
-                        return Err(GetPackageError::HyperUtil(err));
-                    }
-                    tries += 1;
-                    tokio::time::sleep(Duration::from_secs((tries * tries).into())).await;
-                    continue;
-                }
-            }
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header(CACHE_CONTROL, "max-age=604800") // 1 week
+            .body(Empty::new())
+            .expect("Request should be valid");
+
+        let conn_details = ConnectionDetails {
+            client: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+            mirror: mirror.clone(),
+            aliased_host: None,
+            debname: format!(
+                "{distribution}_{component}_{architecture}_Packages{}",
+                pkgfmt.extension()
+            ),
+            subdir: Some(Path::new("dists")),
         };
+
+        let response = process_cache_request(conn_details, req, true, appstate.clone()).await;
 
         if response.status() == StatusCode::NOT_FOUND {
             debug!("Cleanup request {uri} not found");
@@ -197,20 +189,16 @@ async fn get_package_file(
                 "Cleanup request {uri} failed with status code {}:  {response:?}",
                 response.status(),
             );
-            return Err(GetPackageError::Http(response.status()));
+            return Err(response.status());
         }
 
         return Ok((response, pkgfmt));
     }
 
-    Err(GetPackageError::Http(StatusCode::NOT_FOUND))
+    Err(StatusCode::NOT_FOUND)
 }
 
-pub(crate) async fn task_cleanup(
-    database: Database,
-    https_client: Client,
-    active_downloads: ActiveDownloads,
-) -> Result<(), ProxyCacheError> {
+pub(crate) async fn task_cleanup(appstate: &AppState) -> Result<(), ProxyCacheError> {
     static TASK_ACTIVE: LazyLock<parking_lot::Mutex<bool>> =
         LazyLock::new(|| parking_lot::Mutex::new(false));
 
@@ -225,7 +213,7 @@ pub(crate) async fn task_cleanup(
         *val = true;
     }
 
-    let ret = task_cleanup_impl(database, https_client, active_downloads).await;
+    let ret = task_cleanup_impl(appstate).await;
 
     {
         let mut val = mutex.lock();
@@ -236,11 +224,7 @@ pub(crate) async fn task_cleanup(
     ret
 }
 
-async fn task_cleanup_impl(
-    database: Database,
-    https_client: Client,
-    active_downloads: ActiveDownloads,
-) -> Result<(), ProxyCacheError> {
+async fn task_cleanup_impl(appstate: &AppState) -> Result<(), ProxyCacheError> {
     let start = Instant::now();
 
     let usage_retention_days = global_config().usage_retention_days;
@@ -249,7 +233,7 @@ async fn task_cleanup_impl(
             SystemTime::now() - Duration::from_secs(usage_retention_days * 24 * 60 * 60);
         match keep_date.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(val) => {
-                if let Err(err) = database.delete_usage_logs(val).await {
+                if let Err(err) = appstate.database.delete_usage_logs(val).await {
                     error!("Failed to delete old usage logs:  {err}");
                 }
             }
@@ -257,7 +241,7 @@ async fn task_cleanup_impl(
         }
     }
 
-    let mirrors = database.get_mirrors().await.map_err(|err| {
+    let mirrors = appstate.database.get_mirrors().await.map_err(|err| {
         error!("Error looking up hosts:  {err}");
         err
     })?;
@@ -270,8 +254,7 @@ async fn task_cleanup_impl(
         tasks.push(tokio::task::spawn(cleanup_mirror_deb_files(
             mirror.host.clone(),
             mirror.path.clone(),
-            database.clone(),
-            https_client.clone(),
+            appstate.clone(),
         )));
 
         tasks.push(tokio::task::spawn(cleanup_mirror_byhash_files(
@@ -301,7 +284,11 @@ async fn task_cleanup_impl(
             }
         };
 
-        if let Err(err) = database.mirror_cleanup(&cleanup_result.mirror).await {
+        if let Err(err) = appstate
+            .database
+            .mirror_cleanup(&cleanup_result.mirror)
+            .await
+        {
             error!("Error setting cleanup timestamp:  {err}");
         }
 
@@ -310,8 +297,8 @@ async fn task_cleanup_impl(
         bytes_removed += cleanup_result.bytes_removed;
     }
 
-    if let Ok(actual_cache_size) = task_cache_scan(&database).await {
-        let active_downloading_size = active_downloads.download_size();
+    if let Ok(actual_cache_size) = task_cache_scan(&appstate.database).await {
+        let active_downloading_size = appstate.active_downloads.download_size();
 
         let mut mg_cache_size = RUNTIMEDETAILS
             .get()
@@ -373,10 +360,10 @@ struct CleanupDone {
 async fn cleanup_mirror_deb_files(
     host: DomainName,
     path: String,
-    database: Database,
-    https_client: Client,
+    appstate: AppState,
 ) -> Result<CleanupDone, ProxyCacheError> {
-    let origins = database
+    let origins = appstate
+        .database
         .get_origins_by_mirror(&host, &path)
         .await
         .map_err(|err| {
@@ -431,6 +418,11 @@ async fn cleanup_mirror_deb_files(
         path
     );
 
+    let mirror = Mirror {
+        host: host.clone(),
+        path: path.clone(),
+    };
+
     if cached_files.is_empty() {
         return Ok(CleanupDone {
             mirror: Mirror { host, path },
@@ -441,15 +433,15 @@ async fn cleanup_mirror_deb_files(
     }
 
     for origin in &active_origins {
-        let (mut response, pkgfmt) = match get_package_file(&origin.uri(), &https_client).await {
+        let (mut response, pkgfmt) = match get_package_file(&mirror, origin, &appstate).await {
             Ok(r) => r,
-            Err(GetPackageError::Http(status)) if status == StatusCode::NOT_FOUND => {
+            Err(StatusCode::NOT_FOUND) => {
                 warn!(
                     "Could not find package file for {origin:?}; continuing cleanup for mirror {host}/{path}..."
                 );
                 continue;
             }
-            Err(GetPackageError::Http(status)) => {
+            Err(status) => {
                 warn!(
                     "Could not find package file for {origin:?} ({status}); skipping cleanup for mirror {host}/{path}"
                 );
@@ -460,10 +452,6 @@ async fn cleanup_mirror_deb_files(
                     files_removed: 0,
                     bytes_removed: 0,
                 });
-            }
-            Err(GetPackageError::HyperUtil(err)) => {
-                error!("Failed to retrieve package file for {origin:?}:  {err}");
-                return Err(ProxyCacheError::HyperUtil(err));
             }
         };
 
