@@ -1755,7 +1755,8 @@ async fn serve_downloading_file(
 
 enum CacheFileStat<'a> {
     Volatile((tokio::fs::File, &'a Path, SystemTime)),
-    New,
+    NewVolatile,
+    NewDefault,
 }
 
 #[must_use]
@@ -1804,8 +1805,8 @@ async fn serve_new_file(
     // TODO: upstream constant
     const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
-    let (is_volatile, prev_file_size) =
-        if let CacheFileStat::Volatile((file, file_path, _local_modification_time)) = &cfstate {
+    let (volatile_file, warn_on_override, prev_file_size) = match &cfstate {
+        CacheFileStat::Volatile((file, file_path, _local_modification_time)) => {
             let size = match file.metadata().await.map(|md| md.size()) {
                 Ok(s) => s,
                 Err(err) => {
@@ -1817,10 +1818,12 @@ async fn serve_new_file(
                 }
             };
 
-            (true, size)
-        } else {
-            (false, 0)
-        };
+            (true, false, size)
+        }
+        CacheFileStat::NewVolatile => (true, true, 0),
+        CacheFileStat::NewDefault => (false, true, 0),
+    };
+
     let mut client_modified_since = None;
     let mut max_age = 300;
 
@@ -2138,7 +2141,7 @@ async fn serve_new_file(
             .and_then(|ct| ct.parse::<NonZero<u64>>().ok())
     }) {
         Some(size) => ContentLength::Exact(size),
-        None if is_volatile => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
+        None if volatile_file => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
         None => {
             warn!(
                 "Could not extract content-length from header for file {} from mirror {}: {fwd_response:?}",
@@ -2279,7 +2282,7 @@ async fn serve_new_file(
         download_file(
             db,
             &cd,
-            !is_volatile,
+            warn_on_override,
             &st,
             (body, content_length),
             (outfile, outpath),
@@ -2316,7 +2319,7 @@ async fn serve_new_file(
 
     let gcfg = global_config();
 
-    if !is_volatile
+    if !volatile_file
         && gcfg.experimental_parallel_hack_enabled
         && gcfg
             .experimental_parallel_hack_maxparallel
@@ -2429,15 +2432,13 @@ async fn process_cache_request(
                 .insert(conn_details.mirror.clone(), conn_details.debname.clone());
 
             if let Some(init_tx) = init_tx {
-                serve_new_file(
-                    conn_details,
-                    status,
-                    init_tx,
-                    req,
-                    CacheFileStat::New,
-                    appstate,
-                )
-                .await
+                let cfstate = if volatile {
+                    CacheFileStat::NewVolatile
+                } else {
+                    CacheFileStat::NewDefault
+                };
+
+                serve_new_file(conn_details, status, init_tx, req, cfstate, appstate).await
             } else {
                 info!(
                     "Serving file {} already in download from mirror {} for client {}...",
