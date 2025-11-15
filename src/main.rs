@@ -967,7 +967,7 @@ fn serve_cached_file_response(
     response
 }
 
-struct State {
+struct AppState {
     database: Database,
     https_client: Client,
     active_downloads: ActiveDownloads,
@@ -979,9 +979,9 @@ async fn serve_volatile_file(
     req: Request<hyper::body::Incoming>,
     file: tokio::fs::File,
     file_path: &Path,
-    state: State,
+    appstate: AppState,
 ) -> Response<ProxyCacheBody> {
-    let (init_tx, status) = state
+    let (init_tx, status) = appstate
         .active_downloads
         .insert(conn_details.mirror.clone(), conn_details.debname.clone());
 
@@ -992,7 +992,7 @@ async fn serve_volatile_file(
             conn_details.mirror,
             conn_details.client.ip().to_canonical()
         );
-        return serve_downloading_file(conn_details, req, state.database, status).await;
+        return serve_downloading_file(conn_details, req, appstate.database, status).await;
     };
 
     let local_modification_time = match file.metadata().await {
@@ -1028,7 +1028,7 @@ async fn serve_volatile_file(
         init_tx,
         req,
         CacheFileStat::Volatile((file, file_path, local_modification_time)),
-        state,
+        appstate,
     )
     .await
 }
@@ -1799,7 +1799,7 @@ async fn serve_new_file(
     init_tx: tokio::sync::watch::Sender<()>,
     req: Request<hyper::body::Incoming>,
     cfstate: CacheFileStat<'_>,
-    state: State,
+    appstate: AppState,
 ) -> Response<ProxyCacheBody> {
     // TODO: upstream constant
     const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
@@ -1935,7 +1935,7 @@ async fn serve_new_file(
 
     trace!("Forwarded request: {fwd_request:?}");
 
-    let mut fwd_response = match request_with_retry(&state.https_client, fwd_request).await {
+    let mut fwd_response = match request_with_retry(&appstate.https_client, fwd_request).await {
         Ok(r) => r,
         Err(err) => {
             warn!(
@@ -1944,7 +1944,7 @@ async fn serve_new_file(
             );
             *status.write().await =
                 ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            state
+            appstate
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Proxy request failed");
@@ -1991,13 +1991,13 @@ async fn serve_new_file(
             trace!("Forwarded redirected request: {redirected_request:?}");
 
             let redirected_response =
-                match request_with_retry(&state.https_client, redirected_request).await {
+                match request_with_retry(&appstate.https_client, redirected_request).await {
                     Ok(r) => r,
                     Err(err) => {
                         warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
                         *status.write().await =
                             ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-                        state
+                        appstate
                             .active_downloads
                             .remove(&conn_details.mirror, &conn_details.debname);
                         return quick_response(
@@ -2019,12 +2019,13 @@ async fn serve_new_file(
             // ignore if there are no receivers
             init_tx.send_replace(());
 
-            state
+            appstate
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
 
             let Some(client_modified_since) = client_modified_since else {
-                return serve_cached_file(conn_details, req, state.database, file, file_path).await;
+                return serve_cached_file(conn_details, req, appstate.database, file, file_path)
+                    .await;
             };
 
             if let Some(client_modified_time) = client_modified_since
@@ -2100,7 +2101,7 @@ async fn serve_new_file(
                 conn_details.client.ip().to_canonical()
             );
 
-            return serve_cached_file(conn_details, req, state.database, file, file_path).await;
+            return serve_cached_file(conn_details, req, appstate.database, file, file_path).await;
         }
 
         debug!(
@@ -2116,7 +2117,7 @@ async fn serve_new_file(
             fwd_response.status()
         );
         *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-        state
+        appstate
             .active_downloads
             .remove(&conn_details.mirror, &conn_details.debname);
 
@@ -2145,7 +2146,7 @@ async fn serve_new_file(
             );
             *status.write().await =
                 ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            state
+            appstate
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(
@@ -2203,7 +2204,7 @@ async fn serve_new_file(
         if fail {
             *status.write().await =
                 ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            state
+            appstate
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Disk quota reached");
@@ -2250,7 +2251,7 @@ async fn serve_new_file(
 
             *status.write().await =
                 ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            state
+            appstate
                 .active_downloads
                 .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -2272,8 +2273,8 @@ async fn serve_new_file(
 
     let cd = conn_details.clone();
     let st = Arc::clone(&status);
-    let db = state.database.clone();
-    let curr_downloads = state.active_downloads.download_count();
+    let db = appstate.database.clone();
+    let curr_downloads = appstate.active_downloads.download_count();
     tokio::task::spawn(async move {
         download_file(
             db,
@@ -2310,7 +2311,7 @@ async fn serve_new_file(
             }
         }
 
-        state.active_downloads.remove(&cd.mirror, &cd.debname);
+        appstate.active_downloads.remove(&cd.mirror, &cd.debname);
     });
 
     let gcfg = global_config();
@@ -2359,7 +2360,7 @@ async fn serve_new_file(
         }
     }
 
-    serve_downloading_file(conn_details, req, state.database, status).await
+    serve_downloading_file(conn_details, req, appstate.database, status).await
 }
 
 /// Create a TCP connection to host:port, build a tunnel between the connection and
@@ -2398,7 +2399,7 @@ async fn process_cache_request(
     conn_details: ConnectionDetails,
     req: Request<hyper::body::Incoming>,
     volatile: bool,
-    state: State,
+    appstate: AppState,
 ) -> Response<ProxyCacheBody> {
     let cache_path: PathBuf = [
         &global_config().cache_directory,
@@ -2417,13 +2418,13 @@ async fn process_cache_request(
     match tokio::fs::File::open(&cache_path).await {
         Ok(file) => {
             if volatile {
-                serve_volatile_file(conn_details, req, file, &cache_path, state).await
+                serve_volatile_file(conn_details, req, file, &cache_path, appstate).await
             } else {
-                serve_cached_file(conn_details, req, state.database, file, &cache_path).await
+                serve_cached_file(conn_details, req, appstate.database, file, &cache_path).await
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let (init_tx, status) = state
+            let (init_tx, status) = appstate
                 .active_downloads
                 .insert(conn_details.mirror.clone(), conn_details.debname.clone());
 
@@ -2434,7 +2435,7 @@ async fn process_cache_request(
                     init_tx,
                     req,
                     CacheFileStat::New,
-                    state,
+                    appstate,
                 )
                 .await
             } else {
@@ -2444,7 +2445,7 @@ async fn process_cache_request(
                     conn_details.mirror,
                     conn_details.client.ip().to_canonical()
                 );
-                serve_downloading_file(conn_details, req, state.database, status).await
+                serve_downloading_file(conn_details, req, appstate.database, status).await
             }
         }
         Err(err) => {
@@ -2563,16 +2564,16 @@ fn connect_response(
 async fn pre_process_client_request_wrapper(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
-    state: State,
+    appstate: AppState,
 ) -> Result<Response<ProxyCacheBody>, Infallible> {
-    Ok(pre_process_client_request(client, req, state).await)
+    Ok(pre_process_client_request(client, req, appstate).await)
 }
 
 #[must_use]
 async fn pre_process_client_request(
     client: SocketAddr,
     req: Request<hyper::body::Incoming>,
-    state: State,
+    appstate: AppState,
 ) -> Response<ProxyCacheBody> {
     trace!("Incoming request: {req:?}");
 
@@ -2621,7 +2622,7 @@ async fn pre_process_client_request(
                 }
             }
 
-            return serve_web_interface(req, state).await;
+            return serve_web_interface(req, &appstate).await;
         };
 
     {
@@ -2719,7 +2720,7 @@ async fn pre_process_client_request(
                         subdir: None,
                     };
 
-                    return process_cache_request(conn_details, req, false, state).await;
+                    return process_cache_request(conn_details, req, false, appstate).await;
                 }
 
                 warn_once_or_info!("Unsupported pool file extension in filename `{filename}`");
@@ -2782,7 +2783,7 @@ async fn pre_process_client_request(
                     subdir: Some(Path::new("dists")),
                 };
 
-                return process_cache_request(conn_details, req, true, state).await;
+                return process_cache_request(conn_details, req, true, appstate).await;
             }
             ResourceFile::ByHash(mirror_path, filename) => {
                 let mirrorname = match urlencoding::decode(mirror_path) {
@@ -2826,7 +2827,7 @@ async fn pre_process_client_request(
                 };
 
                 // files requested by hash shouldn't be volatile
-                return process_cache_request(conn_details, req, false, state).await;
+                return process_cache_request(conn_details, req, false, appstate).await;
             }
             ResourceFile::Package(mirror_path, distribution, component, architecture, filename) => {
                 let mirrorname = match urlencoding::decode(mirror_path) {
@@ -2926,13 +2927,13 @@ async fn pre_process_client_request(
                             component: component.as_ref(),
                             architecture: architecture.as_ref(),
                         };
-                        if let Err(err) = state.database.add_origin(&orig).await {
+                        if let Err(err) = appstate.database.add_origin(&orig).await {
                             error!("Error registering origin {orig:?}:  {err}");
                         }
                     }
                 }
 
-                return process_cache_request(conn_details, req, true, state).await;
+                return process_cache_request(conn_details, req, true, appstate).await;
             }
         }
     }
@@ -2992,7 +2993,7 @@ async fn pre_process_client_request(
 
     trace!("Forwarded request: {fwd_request:?}");
 
-    let fwd_response = match request_with_retry(&state.https_client, fwd_request).await {
+    let fwd_response = match request_with_retry(&appstate.https_client, fwd_request).await {
         Ok(r) => r,
         Err(err) => {
             warn!("Proxy request to host {requested_host} failed:  {err}");
@@ -3011,7 +3012,7 @@ async fn pre_process_client_request(
             // TODO: cache some of them?
             "dep11" | "i18n" | "source" => (),
             _ => {
-                if let Err(err) = state.database.add_origin(&origin.as_ref()).await {
+                if let Err(err) = appstate.database.add_origin(&origin.as_ref()).await {
                     error!("Error registering origin {origin:?}:  {err}");
                 }
             }
@@ -3037,7 +3038,7 @@ async fn pre_process_client_request(
             trace!("Redirected request: {redirected_request:?}");
 
             let redirected_response =
-                match request_with_retry(&state.https_client, redirected_request).await {
+                match request_with_retry(&appstate.https_client, redirected_request).await {
                     Ok(r) => r,
                     Err(err) => {
                         warn!("Redirected proxy request to host {requested_host} failed:  {err}");
@@ -3299,7 +3300,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         pre_process_client_request_wrapper(
                             client,
                             req,
-                            State {
+                            AppState {
                                 https_client: ht.clone(),
                                 database: db.clone(),
                                 active_downloads: ad.clone(),
