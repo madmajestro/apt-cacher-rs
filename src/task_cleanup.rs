@@ -310,7 +310,7 @@ async fn task_cleanup_impl(
         bytes_removed += cleanup_result.bytes_removed;
     }
 
-    if let Ok(actual_cache_size) = task_cache_scan(database).await {
+    if let Ok(actual_cache_size) = task_cache_scan(&database).await {
         let active_downloading_size = active_downloads.download_size();
 
         let mut mg_cache_size = RUNTIMEDETAILS

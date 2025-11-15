@@ -3194,7 +3194,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let db_task_clone = database.clone();
     tokio::task::spawn(async move {
-        if let Ok(cache_size) = task_cache_scan(db_task_clone).await {
+        if let Ok(cache_size) = task_cache_scan(&db_task_clone).await {
             let rd = RUNTIMEDETAILS.get().expect("global set in main()");
 
             {

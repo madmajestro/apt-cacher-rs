@@ -11,7 +11,7 @@ use crate::{
 
 /// Returns the size in bytes of the entire cache.
 /// Files that cannot be accessed are not included, but logged about.
-pub(crate) async fn task_cache_scan(database: Database) -> Result<u64, ProxyCacheError> {
+pub(crate) async fn task_cache_scan(database: &Database) -> Result<u64, ProxyCacheError> {
     let mirrors = match database.get_mirrors().await {
         Ok(m) => m,
         Err(err) => {
