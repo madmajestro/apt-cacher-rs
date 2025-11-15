@@ -676,7 +676,7 @@ impl Body for MmapBody {
 #[must_use]
 async fn serve_cached_file(
     conn_details: ConnectionDetails,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Empty<()>>,
     database: Database,
     file: tokio::fs::File,
     file_path: &Path,
@@ -976,7 +976,7 @@ struct AppState {
 #[must_use]
 async fn serve_volatile_file(
     conn_details: ConnectionDetails,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Empty<()>>,
     file: tokio::fs::File,
     file_path: &Path,
     appstate: AppState,
@@ -1658,7 +1658,7 @@ async fn serve_unfinished_file(
 #[must_use]
 async fn serve_downloading_file(
     conn_details: ConnectionDetails,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Empty<()>>,
     database: Database,
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
 ) -> Response<ProxyCacheBody> {
@@ -1798,7 +1798,7 @@ async fn serve_new_file(
     conn_details: ConnectionDetails,
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     init_tx: tokio::sync::watch::Sender<()>,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Empty<()>>,
     cfstate: CacheFileStat<'_>,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
@@ -1855,10 +1855,6 @@ async fn serve_new_file(
                 conn_details.client.ip().to_canonical()
             ),
         }
-    }
-
-    if req.body().size_hint().exact() != Some(0) {
-        warn_once_or_info!("Download request has non empty body, not forwarding body: {req:?}");
     }
 
     /*
@@ -2400,7 +2396,7 @@ async fn tunnel(
 #[must_use]
 async fn process_cache_request(
     conn_details: ConnectionDetails,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Empty<()>>,
     volatile: bool,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
@@ -2656,6 +2652,12 @@ async fn pre_process_client_request(
         .iter()
         .find(|alias| alias.aliases.binary_search(&requested_host).is_ok())
         .map(|alias| &alias.main);
+
+    if req.body().size_hint().exact() != Some(0) {
+        warn_once_or_info!("Request has non empty body, not forwarding body: {req:?}");
+    }
+    let (parts, _body) = req.into_parts();
+    let req = Request::from_parts(parts, Empty::new());
 
     let requested_path = req.uri().path();
 
@@ -2976,10 +2978,6 @@ async fn pre_process_client_request(
         } else {
             uncacheables.push((requested_host.clone(), requested_path.to_owned()));
         }
-    }
-
-    if req.body().size_hint().exact() != Some(0) {
-        warn_once_or_info!("Download request has non empty body, not forwarding body: {req:?}");
     }
 
     let (mut parts, _body) = req.into_parts();
