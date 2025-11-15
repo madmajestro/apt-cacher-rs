@@ -2966,11 +2966,11 @@ async fn pre_process_client_request(
             .enumerate()
             .find(|(_idx, (h, p))| *h == requested_host && *p == requested_path)
         {
-            let (mut host, mut path) = uncacheables.remove(idx).expect("entry exists");
-            host.clone_from(&requested_host);
-            requested_path.clone_into(&mut path);
+            let entry = uncacheables.remove(idx).expect("entry exists");
+            debug_assert_eq!(entry.0, requested_host);
+            debug_assert_eq!(entry.1, requested_path);
 
-            uncacheables.push((host, path));
+            uncacheables.push(entry);
         } else {
             uncacheables.push((requested_host.clone(), requested_path.to_owned()));
         }
