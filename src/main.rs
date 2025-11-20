@@ -37,7 +37,7 @@ use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZero;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -54,8 +54,8 @@ use channel_body::ChannelBody;
 use channel_body::ChannelBodyError;
 use clap::Parser;
 #[cfg(not(feature = "mmap"))]
-use futures_util::TryStreamExt;
-use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
+use futures_util::TryStreamExt as _;
+use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
 use http_range::http_parse_range;
 use hyper::body::Frame;
 use hyper::body::Incoming;
@@ -84,7 +84,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, body::Body};
 #[cfg(feature = "tls_rustls")]
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use hyper_rustls::{ConfigBuilderExt as _, HttpsConnector};
 #[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -95,11 +95,11 @@ use memmap2::{Advice, Mmap, MmapOptions};
 use pin_project::pin_project;
 #[cfg(not(feature = "mmap"))]
 use pin_project::pinned_drop;
-use rand::Rng;
-use rand::SeedableRng;
+use rand::Rng as _;
+use rand::SeedableRng as _;
 use rand::distr::Alphanumeric;
 use rand::distr::Bernoulli;
-use rand::prelude::Distribution;
+use rand::prelude::Distribution as _;
 use rand::rngs::SmallRng;
 use rate_checked_body::RateCheckedBody;
 use rate_checked_body::RateCheckedBodyErr;
@@ -107,10 +107,10 @@ use simplelog::CombinedLogger;
 use simplelog::ConfigBuilder;
 use simplelog::WriteLogger;
 use simplelog::{ColorChoice, TermLogger, TerminalMode};
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncReadExt as _;
 #[cfg(not(feature = "mmap"))]
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncSeekExt as _;
+use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::signal::unix::SignalKind;
@@ -2006,6 +2006,11 @@ async fn serve_new_file(
             trace!("Forwarded redirected response: {redirected_response:?}");
 
             fwd_response = redirected_response;
+        } else {
+            debug!(
+                "Host `{}` of moved URI not permitted",
+                moved_uri.host().unwrap_or("<none>")
+            );
         }
     }
 
@@ -2072,8 +2077,7 @@ async fn serve_new_file(
                             "{}",
                             local_modification_time
                                 .elapsed()
-                                .map(|dur| dur.as_secs())
-                                .unwrap_or(0)
+                                .map_or(0, |dur| dur.as_secs())
                         ))
                         .expect("string is valid"),
                     ) // TODO: send AGE in other branches as well
@@ -2323,8 +2327,8 @@ async fn serve_new_file(
             .is_none_or(|size| content_length.upper() > size)
     {
         #[expect(clippy::cast_precision_loss)]
-        let p = (1.0
-            - curr_downloads.saturating_sub(1) as f64 * gcfg.experimental_parallel_hack_factor)
+        let p = (curr_downloads.saturating_sub(1) as f64)
+            .mul_add(-gcfg.experimental_parallel_hack_factor, 1.0)
             .max(0.0);
         let d = Bernoulli::new(p).expect("p is valid");
         let v = d.sample(&mut rand::rng());
@@ -3370,7 +3374,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-fn get_long_version() -> &'static str {
+const fn get_long_version() -> &'static str {
     #[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
     macro_rules! feature_tls {
         () => {

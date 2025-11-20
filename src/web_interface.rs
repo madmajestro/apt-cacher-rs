@@ -2,8 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use build_html::Html;
-use build_html::HtmlContainer;
+use build_html::Html as _;
+use build_html::HtmlContainer as _;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
 use http_body_util::Full;

@@ -1,12 +1,12 @@
 use std::{
     net::{IpAddr, Ipv6Addr},
-    str::FromStr,
+    str::FromStr as _,
     time::Duration,
 };
 
 use log::{LevelFilter, debug, info, trace};
 use sqlx::{
-    ConnectOptions, Error, Executor, Pool, Sqlite, SqlitePool, query, query_as,
+    ConnectOptions as _, Error, Executor as _, Pool, Sqlite, SqlitePool, query, query_as,
     sqlite::SqliteConnectOptions,
 };
 

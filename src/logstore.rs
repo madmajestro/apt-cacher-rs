@@ -40,7 +40,7 @@ impl std::io::Write for LogStoreImpl {
             self.entries.push(s.trim().to_string());
 
             buf_slice.copy_within((pos + 1).., 0);
-            self.buffer.truncate(buf_len - pos - 1);
+            self.buffer.truncate(buf_len - (pos + 1));
 
             buf_slice = self.buffer.as_mut_slice();
         }

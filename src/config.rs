@@ -5,10 +5,10 @@ use std::num::NonZero;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
+use std::str::FromStr as _;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
 use ipnet::IpNet;
@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for ConfigDomainName {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::Error;
+        use serde::de::Error as _;
         let s: String = Deserialize::deserialize(deserializer)?;
 
         Self::new(s)
@@ -128,7 +128,7 @@ impl<'de> Deserialize<'de> for DomainName {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::Error;
+        use serde::de::Error as _;
         let s: String = Deserialize::deserialize(deserializer)?;
 
         Self::new(s)
@@ -183,7 +183,7 @@ impl<'de> Deserialize<'de> for IpNetOrAddr {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::Error;
+        use serde::de::Error as _;
         let s: String = Deserialize::deserialize(deserializer)?;
 
         if let Ok(ip) = s.parse::<IpAddr>() {
@@ -325,7 +325,7 @@ fn from_level_name<'de, D>(deserializer: D) -> Result<LevelFilter, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let s: String = Deserialize::deserialize(deserializer)?;
 
     LevelFilter::from_str(&s).map_err(D::Error::custom)
@@ -335,7 +335,7 @@ fn from_secs_f32<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let s: f32 = Deserialize::deserialize(deserializer)?;
 
     Duration::try_from_secs_f32(s).map_err(D::Error::custom)
@@ -345,7 +345,7 @@ fn from_usize_with_magnitude<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let s: String = Deserialize::deserialize(deserializer)?;
 
     parse_usize_with_magnitude(&s).map_err(D::Error::custom)
@@ -396,7 +396,7 @@ fn from_nonzero_usize_with_magnitude<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let s: String = Deserialize::deserialize(deserializer)?;
 
     parse_usize_with_magnitude(&s)
@@ -410,7 +410,7 @@ fn from_nonzero_u64_with_magnitude<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let s: String = Deserialize::deserialize(deserializer)?;
 
     parse_u64_with_magnitude(&s)
@@ -461,7 +461,7 @@ fn statuscode_from_u32<'de, D>(deserializer: D) -> Result<hyper::StatusCode, D::
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
+    use serde::de::Error as _;
     let v = Deserialize::deserialize(deserializer)?;
 
     hyper::StatusCode::from_u16(v).map_err(D::Error::custom)

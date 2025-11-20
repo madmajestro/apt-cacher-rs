@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::Context as _;
 use log::debug;
 
 use crate::global_config;

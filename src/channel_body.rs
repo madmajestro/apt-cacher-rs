@@ -46,6 +46,7 @@ impl Body for ChannelBody {
 
     fn size_hint(&self) -> hyper::body::SizeHint {
         // TODO: derive Copy for hyper::body::SizeHint
+        // https://github.com/hyperium/http-body/pull/164
         self.remaining.clone()
     }
 

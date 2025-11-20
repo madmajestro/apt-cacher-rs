@@ -8,18 +8,18 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt as _, Empty};
 use hyper::{Method, Request, Response, StatusCode, header::CACHE_CONTROL};
 use log::{debug, error, info, trace, warn};
 use memfd::MemfdOptions;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufWriter};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, BufWriter};
+use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
     AppState, ConnectionDetails, ProxyCacheBody, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
     config::DomainName,
     database::OriginEntry,
-    deb_mirror::{Mirror, UriFormat},
+    deb_mirror::{Mirror, UriFormat as _},
     global_config,
     humanfmt::HumanFmt,
     info_once, process_cache_request, task_cache_scan,
