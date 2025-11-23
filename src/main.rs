@@ -1905,9 +1905,11 @@ async fn serve_new_file(
             .expect("connection host should be valid"),
     };
 
+    let mut req_uri = std::borrow::Cow::Borrowed(req.uri());
+
     let mut fwd_request = Request::builder()
         .method(Method::GET)
-        .uri(req.uri())
+        .uri(&*req_uri)
         .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
         .header(HOST, fwd_host)
         .body(Empty::new())
@@ -1959,9 +1961,11 @@ async fn serve_new_file(
         debug!("Requested URI: {}, Moved URI: {moved_uri:?}", req.uri());
 
         if moved_uri.host().is_some_and(is_host_allowed) {
+            req_uri = std::borrow::Cow::Owned(moved_uri);
+
             let mut redirected_request = Request::builder()
                 .method(Method::GET)
-                .uri(moved_uri)
+                .uri(&*req_uri)
                 .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
                 .header(HOST, fwd_host)
                 .body(Empty::new())
@@ -2114,7 +2118,9 @@ async fn serve_new_file(
 
     if fwd_response.status() != StatusCode::OK {
         warn!(
-            "Request failed with code {}, got response {fwd_response:?}",
+            "Request for file {} from mirror {} with URI `{req_uri}` failed with code `{}`, got response: {fwd_response:?}",
+            conn_details.debname,
+            conn_details.mirror,
             fwd_response.status()
         );
         *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
