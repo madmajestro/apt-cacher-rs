@@ -170,7 +170,10 @@ async fn scan_mirror_dir(host: &DirEntry, mirror: &MirrorEntry) -> u64 {
 async fn scan_sub_dir(entry: DirEntry) -> u64 {
     let entry_path = entry.path();
 
-    trace!("Scanning sub directory `{}`...", entry_path.display());
+    trace!(
+        "Scanning mirror sub directory `{}`...",
+        entry_path.display()
+    );
 
     let mut dir = match tokio::fs::read_dir(&entry_path).await {
         Ok(d) => d,
@@ -189,7 +192,83 @@ async fn scan_sub_dir(entry: DirEntry) -> u64 {
         Ok(e) => e,
         Err(err) => {
             error!(
-                "Error iterating mirror directory `{}`:  {err}",
+                "Error iterating mirror sub directory `{}`:  {err}",
+                entry_path.display()
+            );
+            return dir_size;
+        }
+    } {
+        let file_path = entry.path();
+
+        let mdata = match entry.metadata().await {
+            Ok(d) => d,
+            Err(err) => {
+                error!(
+                    "Error getting file meta data of `{}`:  {err}",
+                    file_path.display()
+                );
+                continue;
+            }
+        };
+
+        let file_type = mdata.file_type();
+
+        if !file_type.is_dir() {
+            dir_size += mdata.len();
+        }
+
+        if file_type.is_file() {
+            continue;
+        }
+
+        if file_type.is_dir() && entry.file_name() == "by-hash" {
+            dir_size += scan_sub2_dir(entry).await;
+            continue;
+        }
+
+        warn!(
+            "Unrecognized entry in mirror sub directory `{}`: `{}`",
+            entry_path.display(),
+            file_path.display()
+        );
+    }
+
+    trace!(
+        "Size of mirror sub directory `{}`: {}",
+        entry_path.display(),
+        dir_size
+    );
+
+    dir_size
+}
+
+#[must_use]
+async fn scan_sub2_dir(entry: DirEntry) -> u64 {
+    let entry_path = entry.path();
+
+    trace!(
+        "Scanning mirror sub^2 directory `{}`...",
+        entry_path.display()
+    );
+
+    let mut dir = match tokio::fs::read_dir(&entry_path).await {
+        Ok(d) => d,
+        Err(err) => {
+            error!(
+                "Error listing mirror sub^2 directory `{}`:  {err}",
+                entry_path.display()
+            );
+            return 0;
+        }
+    };
+
+    let mut dir_size = 0;
+
+    while let Some(entry) = match dir.next_entry().await {
+        Ok(e) => e,
+        Err(err) => {
+            error!(
+                "Error iterating mirror sub^2 directory `{}`:  {err}",
                 entry_path.display()
             );
             return dir_size;
@@ -219,14 +298,14 @@ async fn scan_sub_dir(entry: DirEntry) -> u64 {
         }
 
         warn!(
-            "Unrecognized entry in mirror sub directory `{}`: `{}`",
+            "Unrecognized entry in mirror sub^2 directory `{}`: `{}`",
             entry_path.display(),
             file_path.display()
         );
     }
 
     trace!(
-        "Size of sub directory `{}`: {}",
+        "Size of mirror sub^2 directory `{}`: {}",
         entry_path.display(),
         dir_size
     );
