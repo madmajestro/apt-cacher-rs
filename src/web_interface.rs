@@ -75,7 +75,7 @@ async fn flat_directory_size(path: &Path) -> Result<(usize, u64), tokio::io::Err
     Ok((total_files, total_size))
 }
 
-async fn build_mirror_table(database: &Database) -> Result<Table, ProxyCacheError> {
+async fn build_mirror_table(database: &Database) -> Result<(Table, usize), ProxyCacheError> {
     let mut html_table_mirrors = Table::new().with_header_row(&[
         "Mirror",
         "Last Seen",
@@ -87,6 +87,7 @@ async fn build_mirror_table(database: &Database) -> Result<Table, ProxyCacheErro
         "Disk Space",
         "File Count",
     ]);
+    let mut rows = 0;
 
     let mut mirrors = match database.get_mirrors_with_stats().await {
         Ok(m) => m,
@@ -177,12 +178,13 @@ async fn build_mirror_table(database: &Database) -> Result<Table, ProxyCacheErro
             dir_size_fmt,
             file_count_fmt,
         ]);
+        rows += 1;
     }
 
-    Ok(html_table_mirrors)
+    Ok((html_table_mirrors, rows))
 }
 
-async fn build_origin_table(database: &Database) -> Result<Table, ProxyCacheError> {
+async fn build_origin_table(database: &Database) -> Result<(Table, usize), ProxyCacheError> {
     let mut html_table_origins = Table::new().with_header_row(&[
         "Mirror",
         "Distribution",
@@ -190,6 +192,7 @@ async fn build_origin_table(database: &Database) -> Result<Table, ProxyCacheErro
         "Architecture",
         "Last Seen",
     ]);
+    let mut rows = 0;
 
     let mut origins = match database.get_origins().await {
         Ok(o) => o,
@@ -214,13 +217,15 @@ async fn build_origin_table(database: &Database) -> Result<Table, ProxyCacheErro
             origin.architecture,
             last_seen_fmt,
         ]);
+        rows += 1;
     }
 
-    Ok(html_table_origins)
+    Ok((html_table_origins, rows))
 }
 
-async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheError> {
+async fn build_client_table(database: &Database) -> Result<(Table, usize), ProxyCacheError> {
     let mut html_table_clients = Table::new().with_header_row(&["IP"]);
+    let mut rows = 0;
 
     let clients = match database.get_clients().await {
         Ok(o) => o,
@@ -232,52 +237,55 @@ async fn build_client_table(database: &Database) -> Result<Table, ProxyCacheErro
 
     for client in clients {
         html_table_clients.add_body_row([client]);
+        rows += 1;
     }
 
-    Ok(html_table_clients)
+    Ok((html_table_clients, rows))
 }
 
-fn build_uncacheable_table() -> Table {
+fn build_uncacheable_table() -> (Table, usize) {
     let mut html_table_uncacheables =
         Table::new().with_header_row(&["Requested Host", "Requested Path"]);
+    let mut rows = 0;
 
     {
         let uncacheables = UNCACHEABLES.get().expect("Initialized in main()").read();
 
         for (host, path) in uncacheables.iter() {
             html_table_uncacheables.add_body_row([&format!("{host}"), path]);
+            rows += 1;
         }
     }
 
-    html_table_uncacheables
+    (html_table_uncacheables, rows)
 }
 
 #[must_use]
 async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
     let start = Instant::now();
 
-    let Ok(html_table_mirrors) = build_mirror_table(&appstate.database).await else {
+    let Ok((html_table_mirrors, mirror_rows)) = build_mirror_table(&appstate.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
         );
     };
 
-    let Ok(html_table_origins) = build_origin_table(&appstate.database).await else {
+    let Ok((html_table_origins, origin_rows)) = build_origin_table(&appstate.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
         );
     };
 
-    let Ok(html_table_clients) = build_client_table(&appstate.database).await else {
+    let Ok((html_table_clients, client_rows)) = build_client_table(&appstate.database).await else {
         return quick_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Local Webinterface failure",
         );
     };
 
-    let html_table_uncacheables = build_uncacheable_table();
+    let (html_table_uncacheables, uncacheable_rows) = build_uncacheable_table();
 
     let rd = RUNTIMEDETAILS.get().expect("Should be set");
     let database_size_fmt = match tokio::fs::metadata(&rd.config.database_path).await {
@@ -317,25 +325,25 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
         .with_container(
             Container::new(ContainerType::Div)
                 .with_header_attr(2, "Mirrors", [("id", "mirrors-head")])
-                .with_paragraph("List of proxied mirrors:")
+                .with_paragraph(format!("List of proxied mirrors [{mirror_rows}]:"))
                 .with_table(html_table_mirrors),
         )
         .with_container(
             Container::new(ContainerType::Div)
                 .with_header_attr(2, "Origins", [("id", "origins-head")])
-                .with_paragraph("List of proxied origins:")
+                .with_paragraph(format!("List of proxied origins [{origin_rows}]:"))
                 .with_table(html_table_origins),
         )
         .with_container(
             Container::new(ContainerType::Div)
                 .with_header_attr(2, "Clients", [("id", "clients-head")])
-                .with_paragraph("List of clients:")
+                .with_paragraph(format!("List of clients [{client_rows}]:"))
                 .with_table(html_table_clients),
         )
         .with_container(
             Container::new(ContainerType::Div)
                 .with_header_attr(2, "Uncacheables", [("id", "clients-head")])
-                .with_paragraph("List of most recent files unable to cache:")
+                .with_paragraph(format!("List of most recent files unable to cache [{uncacheable_rows}]:"))
                 .with_table(html_table_uncacheables),
         )
         .with_container(
