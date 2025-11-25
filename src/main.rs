@@ -2425,6 +2425,11 @@ pub(crate) async fn process_cache_request(
 
     match tokio::fs::File::open(&cache_path).await {
         Ok(file) => {
+            trace!(
+                "File {} found, serving {} version...",
+                cache_path.display(),
+                if volatile { "volatile" } else { "cached" }
+            );
             if volatile {
                 serve_volatile_file(conn_details, req, file, &cache_path, appstate).await
             } else {
@@ -2435,6 +2440,16 @@ pub(crate) async fn process_cache_request(
             let (init_tx, status) = appstate
                 .active_downloads
                 .insert(conn_details.mirror.clone(), conn_details.debname.clone());
+
+            trace!(
+                "File {} not found, serving {} version...",
+                cache_path.display(),
+                if init_tx.is_some() {
+                    "in-download"
+                } else {
+                    "new"
+                }
+            );
 
             if let Some(init_tx) = init_tx {
                 let cfstate = if volatile {
@@ -2670,7 +2685,7 @@ async fn pre_process_client_request(
 
     let requested_path = req.uri().path();
 
-    debug!(
+    trace!(
         "Requested host: `{requested_host}`; Aliased host: `{aliased_host:?}`; Requested path: `{requested_path}`"
     );
 
@@ -2719,7 +2734,7 @@ async fn pre_process_client_request(
                         );
                     }
 
-                    debug!("Decoded mirrorname: `{mirrorname}`; Decoded debname: `{debname}`");
+                    trace!("Decoded mirrorname: `{mirrorname}`; Decoded debname: `{debname}`");
 
                     let conn_details = ConnectionDetails {
                         client,
@@ -2780,7 +2795,7 @@ async fn pre_process_client_request(
                     return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
                 }
 
-                debug!(
+                trace!(
                     "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded filename: `{filename}`"
                 );
 
@@ -2825,7 +2840,7 @@ async fn pre_process_client_request(
                     return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
                 }
 
-                debug!("Decoded mirrorname: `{mirrorname}`; Decoded filename: `{filename}`");
+                trace!("Decoded mirrorname: `{mirrorname}`; Decoded filename: `{filename}`");
 
                 let conn_details = ConnectionDetails {
                     client,
@@ -2914,7 +2929,7 @@ async fn pre_process_client_request(
                     return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
                 }
 
-                debug!(
+                trace!(
                     "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded architecture: `{architecture}`; Decoded filename: `{filename}`"
                 );
 
@@ -3481,13 +3496,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .expect("Initial set in main() should succeed");
 
-    let output_log_config = if args.skip_log_timestamp {
-        ConfigBuilder::new()
-            .set_time_level(LevelFilter::Off)
-            .build()
-    } else {
-        simplelog::Config::default()
-    };
+    let output_log_config = ConfigBuilder::new()
+        .set_time_level(if args.skip_log_timestamp {
+            LevelFilter::Off
+        } else {
+            LevelFilter::Error
+        })
+        .set_thread_level(if config_log_level >= LevelFilter::Debug {
+            LevelFilter::Error
+        } else {
+            LevelFilter::Off
+        })
+        .build();
 
     let internal_log_config = ConfigBuilder::new()
         .set_location_level(LevelFilter::Error)
