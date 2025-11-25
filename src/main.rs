@@ -792,33 +792,33 @@ async fn serve_cached_file_mmap(
 ) -> Response<ProxyCacheBody> {
     let file_pathbuf = file_path.to_path_buf();
     let client_ip = conn_details.client.ip();
-    let thread_result = tokio::task::spawn_blocking(move || {
-        trace!(
-            "Using mmap(2) with start={content_start} and length={content_length} from content_range={content_range:?} for file `{}`",
-            file_pathbuf.display()
-        );
+
+    trace!(
+        "Using mmap(2) with start={content_start} and length={content_length} from content_range={content_range:?} for file `{}`",
+        file_pathbuf.display()
+    );
+
+    let Some(memory_map) = tokio::task::spawn_blocking(move || {
         // SAFETY:
         // The file is only read from and only forwarded as bytes to a network socket.
         // Also clients perform a signature check on received packages.
-        let memory_map = match unsafe {
+        let memory_map = unsafe {
             MmapOptions::new()
                 .offset(content_start)
                 .len(content_length)
                 .map(&file)
-        } {
-            Ok(f) => f,
-            Err(err) => {
-                error!(
-                    "Failed to mmap downloaded file `{}`:  {err}",
-                    file_pathbuf.display()
-                );
-                return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
-            }
-        };
+        }
+        .inspect_err(|err| {
+            error!(
+                "Failed to mmap downloaded file `{}`:  {err}",
+                file_pathbuf.display()
+            );
+        })
+        .ok()?;
 
         debug_assert_eq!(memory_map.len(), content_length);
 
-        /* close file, since mapping is independent */
+        // close file, since mapping is independent
         drop(file);
 
         if let Err(err) = memory_map.advise(Advice::Sequential) {
@@ -828,34 +828,36 @@ async fn serve_cached_file_mmap(
             );
         }
 
-        let memory_body =
-            MmapBody::new(memory_map, content_length, partial, database_tx, conn_details);
-
-        let body = match global_config().min_download_rate {
-            Some(rate) => ProxyCacheBody::MmapRateChecked(
-                RateCheckedBody::new(memory_body.map_err(|never| match never {}), rate),
-                client_ip,
-            ),
-            None => ProxyCacheBody::Mmap(memory_body),
-        };
-
-        serve_cached_file_response(
-            http_status,
-            modification_date,
-            content_length as u64,
-            body,
-            content_range,
-        )
+        Some(memory_map)
     })
-    .await;
+    .await
+    .expect("task should not panic") else {
+        return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
+    };
 
-    match thread_result {
-        Ok(resp) => resp,
-        Err(err) => {
-            error!("Failed to join blocking thread:  {err}");
-            quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure")
-        }
-    }
+    let memory_body = MmapBody::new(
+        memory_map,
+        content_length,
+        partial,
+        database_tx,
+        conn_details,
+    );
+
+    let body = match global_config().min_download_rate {
+        Some(rate) => ProxyCacheBody::MmapRateChecked(
+            RateCheckedBody::new(memory_body.map_err(|never| match never {}), rate),
+            client_ip,
+        ),
+        None => ProxyCacheBody::Mmap(memory_body),
+    };
+
+    serve_cached_file_response(
+        http_status,
+        modification_date,
+        content_length as u64,
+        body,
+        content_range,
+    )
 }
 
 #[cfg(not(feature = "mmap"))]
