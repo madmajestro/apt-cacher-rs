@@ -6,8 +6,8 @@ use std::{
 
 use log::{LevelFilter, debug, info, trace};
 use sqlx::{
-    ConnectOptions as _, Error, Executor as _, Pool, Sqlite, SqlitePool, query, query_as,
-    sqlite::SqliteConnectOptions,
+    ConnectOptions as _, Error, Executor as _, Pool, Sqlite, SqlitePool, Transaction, query,
+    query_as, sqlite::SqliteConnectOptions,
 };
 
 use crate::{
@@ -142,7 +142,9 @@ impl Database {
         Ok(())
     }
 
-    async fn add_mirror(&self, mirror: &Mirror) -> Result<(), Error> {
+    #[inline]
+    async fn add_mirror(mirror: &Mirror, tx: &mut Transaction<'_, Sqlite>) -> Result<(), Error>
+where {
         query!(
             r"
                 INSERT INTO mirrors
@@ -155,14 +157,16 @@ impl Database {
             mirror.host,
             mirror.path
         )
-        .execute(&self.conn)
+        .execute(&mut **tx)
         .await?;
 
         Ok(())
     }
 
     pub(crate) async fn add_origin(&self, origin: &OriginRef<'_>) -> Result<(), Error> {
-        self.add_mirror(origin.mirror).await?;
+        let mut tx = self.conn.begin().await?;
+
+        Self::add_mirror(origin.mirror, &mut tx).await?;
 
         query!(
             r"
@@ -179,8 +183,10 @@ impl Database {
             origin.component,
             origin.architecture
         )
-        .execute(&self.conn)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -309,7 +315,9 @@ impl Database {
         };
         let client: &[u8] = &client.octets();
 
-        self.add_mirror(mirror).await?;
+        let mut tx = self.conn.begin().await?;
+
+        Self::add_mirror(mirror, &mut tx).await?;
 
         query!(
             r"
@@ -325,8 +333,10 @@ impl Database {
             duration,
             client
         )
-        .execute(&self.conn)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -353,7 +363,9 @@ impl Database {
         };
         let client: &[u8] = &client.octets();
 
-        self.add_mirror(mirror).await?;
+        let mut tx = self.conn.begin().await?;
+
+        Self::add_mirror(mirror, &mut tx).await?;
 
         query!(
             r"
@@ -370,8 +382,10 @@ impl Database {
             partial,
             client
         )
-        .execute(&self.conn)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
