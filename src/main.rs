@@ -982,20 +982,6 @@ async fn serve_volatile_file(
     file_path: &Path,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
-    let (init_tx, status) = appstate
-        .active_downloads
-        .insert(conn_details.mirror.clone(), conn_details.debname.clone());
-
-    let Some(init_tx) = init_tx else {
-        info!(
-            "Serving file {} already in download from mirror {} for client {}...",
-            conn_details.debname,
-            conn_details.mirror,
-            conn_details.client.ip().to_canonical()
-        );
-        return serve_downloading_file(conn_details, req, appstate.database_tx, status).await;
-    };
-
     let local_modification_time = match file.metadata().await {
         Ok(data) => data
             .modified()
@@ -1009,19 +995,31 @@ async fn serve_volatile_file(
         }
     };
 
-    // TODO: fix for mirror responding 304 to outdated if-modified-since
-    // let volatile = match local_modification_time.elapsed().map(|dur| dur.as_secs()) {
-    //     Ok(age) if age > 24 * 60 * 60 => {
-    //         debug!(
-    //             "File {} from mirror {} is {} old, forcing refresh",
-    //             conn_details.debname,
-    //             conn_details.mirror,
-    //             HumanFmt::Time(Duration::from_secs(age))
-    //         );
-    //         CacheFileStat::Override
-    //     }
-    //     _ => CacheFileStat::Volatile((file, file_path, local_modification_time)),
-    // };
+    // Cache volatile files for short periods to reduce up-to-date requests
+    if let Ok(elapsed) = local_modification_time.elapsed()
+        && elapsed < Duration::from_secs(30)
+    {
+        debug!(
+            "Volatile file `{}` is just {} old, serving cached version...",
+            file_path.display(),
+            HumanFmt::Time(elapsed)
+        );
+        return serve_cached_file(conn_details, req, appstate.database_tx, file, file_path).await;
+    }
+
+    let (init_tx, status) = appstate
+        .active_downloads
+        .insert(conn_details.mirror.clone(), conn_details.debname.clone());
+
+    let Some(init_tx) = init_tx else {
+        info!(
+            "Serving file {} already in download from mirror {} for client {}...",
+            conn_details.debname,
+            conn_details.mirror,
+            conn_details.client.ip().to_canonical()
+        );
+        return serve_downloading_file(conn_details, req, appstate.database_tx, status).await;
+    };
 
     serve_new_file(
         conn_details,
@@ -2023,6 +2021,22 @@ async fn serve_new_file(
 
     if let CacheFileStat::Volatile((file, file_path, local_modification_time)) = cfstate {
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
+            // Refactor when https://github.com/tokio-rs/tokio/issues/6368 is resolved
+            let std_file = file.into_std().await;
+            let std_file_path = file_path.to_path_buf();
+            let file = tokio::task::spawn_blocking(move || {
+                if let Err(err) = std_file.set_modified(SystemTime::now()) {
+                    error!(
+                        "Failed to update modification time of file `{}`:  {}",
+                        std_file_path.display(),
+                        err
+                    );
+                }
+                tokio::fs::File::from_std(std_file)
+            })
+            .await
+            .expect("task should not panic");
+
             *status.write().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
             // ignore if there are no receivers
             init_tx.send_replace(());
