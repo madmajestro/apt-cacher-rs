@@ -1163,12 +1163,10 @@ impl ActiveDownloads {
 
     #[must_use]
     fn download_size(&self) -> u64 {
-        let ads = self.inner.read();
-
         tokio::task::block_in_place(move || {
             let mut sum = 0;
 
-            for download in ads.values() {
+            for download in self.inner.read().values() {
                 let d = download.blocking_read();
                 if let ActiveDownloadStatus::Download(_, size, _) = &*d {
                     sum += size.upper().get();
@@ -1181,12 +1179,10 @@ impl ActiveDownloads {
 
     #[must_use]
     fn download_count(&self) -> usize {
-        let ads = self.inner.read();
-
         tokio::task::block_in_place(move || {
             let mut count = 0;
 
-            for download in ads.values() {
+            for download in self.inner.read().values() {
                 let d = download.blocking_read();
                 match &*d {
                     ActiveDownloadStatus::Init(_)
