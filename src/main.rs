@@ -1668,6 +1668,7 @@ async fn serve_downloading_file(
         match &*st {
             ActiveDownloadStatus::Aborted(_err) => {
                 drop(st);
+                drop(status);
                 return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Download Aborted");
             }
             ActiveDownloadStatus::Init(init_rx) => {
@@ -1685,12 +1686,15 @@ async fn serve_downloading_file(
                 init_waited = true;
             }
             ActiveDownloadStatus::Finished(path) => {
-                let file = match tokio::fs::File::open(&path).await {
+                let path_clone = path.clone();
+                drop(st);
+                drop(status);
+                let file = match tokio::fs::File::open(&path_clone).await {
                     Ok(f) => f,
                     Err(err) => {
                         error!(
                             "Failed to open downloaded file `{}`:  {err}",
-                            path.display()
+                            path_clone.display()
                         );
                         return quick_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1698,13 +1702,11 @@ async fn serve_downloading_file(
                         );
                     }
                 };
-                let path_clone = path.clone();
-                drop(st);
 
                 return serve_cached_file(conn_details, req, database_tx, file, &path_clone).await;
             }
             ActiveDownloadStatus::Download(path, content_length, receiver) => {
-                /* Cannot use mmap(2) since the file is not yet completely written */
+                // Cannot use mmap(2) since the file is not yet completely written
                 let file = match tokio::fs::File::open(&path).await {
                     Ok(f) => f,
                     Err(err) if err.kind() == tokio::io::ErrorKind::NotFound => {
