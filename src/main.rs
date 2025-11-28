@@ -2043,8 +2043,8 @@ async fn serve_new_file(
             .expect("task should not panic");
 
             *status.write().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
-            // ignore if there are no receivers
-            init_tx.send_replace(());
+            // notify receivers
+            drop(init_tx);
 
             appstate
                 .active_downloads
@@ -2299,8 +2299,8 @@ async fn serve_new_file(
     let (tx, rx) = tokio::sync::watch::channel(());
 
     *status.write().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
-    // ignore if there are no receivers
-    init_tx.send_replace(());
+    // notify receivers
+    drop(init_tx);
 
     let cd = conn_details.clone();
     let st = Arc::clone(&status);
