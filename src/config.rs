@@ -48,7 +48,7 @@ pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_ENABLED: bool = false;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MAXPARALLEL: Option<NonZero<usize>> =
     Some(nonzero!(3));
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_STATUSCODE: hyper::StatusCode =
-    hyper::StatusCode::SERVICE_UNAVAILABLE;
+    hyper::StatusCode::TOO_MANY_REQUESTS;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_RETRYAFTER: u16 = 5;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_FACTOR: f64 = 0.2;
 pub(crate) const DEFAULT_EXPERIMENTAL_PARALLEL_HACK_MINSIZE: Option<NonZero<u64>> =
