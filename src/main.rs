@@ -132,11 +132,13 @@ use crate::deb_mirror::valid_component;
 use crate::deb_mirror::valid_distribution;
 use crate::deb_mirror::valid_filename;
 use crate::deb_mirror::valid_mirrorname;
+use crate::download_barrier::DownloadBarrier;
 use crate::error::MirrorDownloadRate;
 use crate::error::ProxyCacheError;
 use crate::http_range::http_datetime_to_systemtime;
 use crate::http_range::systemtime_to_http_datetime;
 use crate::humanfmt::HumanFmt;
+use crate::init_barrier::InitBarrier;
 use crate::logstore::LogStore;
 use crate::ringbuffer::RingBuffer;
 use crate::task_cache_scan::task_cache_scan;
@@ -1208,6 +1210,70 @@ impl ActiveDownloads {
     }
 }
 
+mod download_barrier {
+    use std::{path::PathBuf, sync::Arc};
+
+    use tokio::sync::watch::error::SendError;
+
+    use crate::{AbortReason, ActiveDownloadStatus};
+
+    #[must_use]
+    pub(crate) struct DownloadBarrier<'a> {
+        tx: tokio::sync::watch::Sender<()>,
+        status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
+        active: bool,
+    }
+
+    impl<'a> DownloadBarrier<'a> {
+        pub(crate) const fn new(
+            tx: tokio::sync::watch::Sender<()>,
+            status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
+        ) -> Self {
+            Self {
+                tx,
+                status,
+                active: true,
+            }
+        }
+
+        pub(crate) fn ping(&self) -> Result<(), SendError<()>> {
+            debug_assert!(self.active);
+
+            self.tx.send(())
+        }
+
+        pub(crate) async fn abort(mut self, reason: AbortReason) {
+            debug_assert!(self.active);
+
+            *self.status.write().await = ActiveDownloadStatus::Aborted(reason);
+            self.active = false;
+        }
+
+        pub(crate) fn release(
+            mut self,
+            mut lock: tokio::sync::RwLockWriteGuard<'_, ActiveDownloadStatus>,
+            path: PathBuf,
+        ) {
+            debug_assert!(self.active);
+
+            *lock = ActiveDownloadStatus::Finished(path);
+
+            self.active = false;
+        }
+    }
+
+    impl Drop for DownloadBarrier<'_> {
+        fn drop(&mut self) {
+            if self.active {
+                tokio::task::block_in_place(|| {
+                    *self.status.blocking_write() =
+                        ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
+                });
+            }
+        }
+    }
+}
+
 async fn download_file(
     database_tx: tokio::sync::mpsc::Sender<DatabaseCommand>,
     conn_details: &ConnectionDetails,
@@ -1224,6 +1290,7 @@ async fn download_file(
         conn_details.client.ip().to_canonical()
     );
     let start = Instant::now();
+    let dbarrier = DownloadBarrier::new(tx, status);
 
     let body = input.0;
     let content_length = input.1;
@@ -1249,30 +1316,26 @@ async fn download_file(
             Err(err) => {
                 match err {
                     RateCheckedBodyErr::DownloadRate(download_rate_err) => {
-                        *status.write().await = ActiveDownloadStatus::Aborted(
-                            AbortReason::MirrorDownloadRate(error::MirrorDownloadRate {
+                        dbarrier
+                            .abort(AbortReason::MirrorDownloadRate(error::MirrorDownloadRate {
                                 download_rate_err,
                                 mirror: conn_details.mirror.clone(),
                                 debname: conn_details.debname.clone(),
                                 client_ip: conn_details.client.ip(),
-                            }),
-                        );
+                            }))
+                            .await;
                     }
                     RateCheckedBodyErr::Hyper(herr) => {
                         error!(
                             "Error extracting frame from body for file {} from mirror {}:  {herr}",
                             conn_details.debname, conn_details.mirror
                         );
-                        *status.write().await =
-                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                     }
                     RateCheckedBodyErr::ProxyCache(perr) => {
                         error!(
                             "Error extracting frame from body for file {} from mirror {}:  {perr}",
                             conn_details.debname, conn_details.mirror
                         );
-                        *status.write().await =
-                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                     }
                 }
 
@@ -1289,20 +1352,16 @@ async fn download_file(
                     conn_details.mirror,
                     content_length.upper()
                 );
-                *status.write().await =
-                    ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                 return;
             }
 
             if let Err(err) = writer.write_all_buf(&mut chunk).await {
                 error!("Error writing to file `{}`:  {err}", output.1.display());
-                *status.write().await =
-                    ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
                 return;
             }
 
             if connected && bytes > (buf_size as u64 + last_send_bytes) {
-                if let Err(err) = tx.send(()) {
+                if let Err(err) = dbarrier.ping() {
                     error!(
                         "All receivers of watch channel for file {} from mirror {} died:  {err}",
                         conn_details.debname, conn_details.mirror
@@ -1321,7 +1380,6 @@ async fn download_file(
 
     if let Err(err) = writer.flush().await {
         error!("Error writing to file `{}`:  {err}", output.1.display());
-        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
         return;
     }
     drop(writer);
@@ -1348,7 +1406,6 @@ async fn download_file(
             "Failed to create destination directory `{}`:  {err}",
             dest_dir.display()
         );
-        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
         return;
     }
 
@@ -1369,7 +1426,9 @@ async fn download_file(
     debug!("Saving downloaded file to `{}`", dest_path.display());
 
     {
-        let mut locked_status = status.write().await;
+        // Lock to block all downloading tasks, since the file from the
+        // path of the downloading state is going to be moved.
+        let locked_status = status.write().await;
 
         /* Should only happen for concurrent downloads from aliased mirrors */
         if warn_on_override && tokio::fs::try_exists(&dest_path).await.unwrap_or(false) {
@@ -1403,21 +1462,28 @@ async fn download_file(
                             .expect("cache size should not underflow");
                     }
                 }
-                *locked_status = ActiveDownloadStatus::Finished(dest_path);
+
+                dbarrier.release(locked_status, dest_path);
             }
             Err(err) => {
+                drop(locked_status);
+
                 error!(
                     "Failed to rename file `{}` to `{}`:  {err}",
                     output.1.display(),
                     dest_path.display()
                 );
-                *locked_status = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
+                if let Err(err) = tokio::fs::remove_file(&output.1).await {
+                    error!(
+                        "Failed to delete temporary file `{}`:  {err}",
+                        output.1.display(),
+                    );
+                }
+
+                return;
             }
         }
     }
-
-    /* Drop sender before database work */
-    drop(tx);
 
     let elapsed = start.elapsed();
     info!(
@@ -1796,6 +1862,77 @@ impl std::fmt::Display for ContentLength {
     }
 }
 
+mod init_barrier {
+    use std::{path::PathBuf, sync::Arc};
+
+    use crate::{
+        AbortReason, ActiveDownloadStatus, ActiveDownloads, ContentLength, deb_mirror::Mirror,
+    };
+
+    #[must_use]
+    pub(crate) struct InitBarrier<'a> {
+        /// Unused, receivers just needs to get notified by drop
+        _tx: tokio::sync::watch::Sender<()>,
+        status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
+        active_downloads: &'a ActiveDownloads,
+        mirror: &'a Mirror,
+        debname: &'a str,
+        active: bool,
+    }
+
+    impl<'a> InitBarrier<'a> {
+        pub(crate) fn new(
+            tx: tokio::sync::watch::Sender<()>,
+            status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
+            active_downloads: &'a ActiveDownloads,
+            mirror: &'a Mirror,
+            debname: &'a str,
+        ) -> Self {
+            Self {
+                _tx: tx,
+                status,
+                active_downloads,
+                mirror,
+                debname,
+                active: true,
+            }
+        }
+
+        pub(crate) async fn finished(mut self, path: PathBuf) {
+            debug_assert!(self.active);
+
+            *self.status.write().await = ActiveDownloadStatus::Finished(path);
+            self.active_downloads.remove(self.mirror, self.debname);
+            self.active = false;
+        }
+
+        pub(crate) async fn download(
+            mut self,
+            path: PathBuf,
+            content_length: ContentLength,
+            receiver: tokio::sync::watch::Receiver<()>,
+        ) {
+            debug_assert!(self.active);
+
+            *self.status.write().await =
+                ActiveDownloadStatus::Download(path, content_length, receiver);
+            self.active = false;
+        }
+    }
+
+    impl Drop for InitBarrier<'_> {
+        fn drop(&mut self) {
+            if self.active {
+                tokio::task::block_in_place(|| {
+                    *self.status.blocking_write() =
+                        ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
+                    self.active_downloads.remove(self.mirror, self.debname);
+                });
+            }
+        }
+    }
+}
+
 #[must_use]
 async fn serve_new_file(
     conn_details: ConnectionDetails,
@@ -1807,6 +1944,14 @@ async fn serve_new_file(
 ) -> Response<ProxyCacheBody> {
     // TODO: upstream constant
     const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+
+    let ibarrier = InitBarrier::new(
+        init_tx,
+        &status,
+        &appstate.active_downloads,
+        &conn_details.mirror,
+        &conn_details.debname,
+    );
 
     let (warn_on_override, prev_file_size) = match &cfstate {
         CacheFileStat::Volatile((file, file_path, _local_modification_time)) => {
@@ -1945,11 +2090,6 @@ async fn serve_new_file(
                 "Proxy request failed to mirror {}:  {err}",
                 conn_details.mirror
             );
-            *status.write().await =
-                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            appstate
-                .active_downloads
-                .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Proxy request failed");
         }
     };
@@ -2001,11 +2141,6 @@ async fn serve_new_file(
                     Ok(r) => r,
                     Err(err) => {
                         warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
-                        *status.write().await =
-                            ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-                        appstate
-                            .active_downloads
-                            .remove(&conn_details.mirror, &conn_details.debname);
                         return quick_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "Proxy request failed",
@@ -2042,13 +2177,7 @@ async fn serve_new_file(
             .await
             .expect("task should not panic");
 
-            *status.write().await = ActiveDownloadStatus::Finished(file_path.to_path_buf());
-            // notify receivers
-            drop(init_tx);
-
-            appstate
-                .active_downloads
-                .remove(&conn_details.mirror, &conn_details.debname);
+            ibarrier.finished(file_path.to_path_buf()).await;
 
             let Some(client_modified_since) = client_modified_since else {
                 return serve_cached_file(conn_details, req, appstate.database_tx, file, file_path)
@@ -2145,10 +2274,6 @@ async fn serve_new_file(
             conn_details.mirror,
             fwd_response.status()
         );
-        *status.write().await = ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-        appstate
-            .active_downloads
-            .remove(&conn_details.mirror, &conn_details.debname);
 
         let (parts, body) = fwd_response.into_parts();
 
@@ -2175,11 +2300,6 @@ async fn serve_new_file(
                 "Could not extract content-length from header for file {} from mirror {}: {fwd_response:?}",
                 conn_details.debname, conn_details.mirror
             );
-            *status.write().await =
-                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            appstate
-                .active_downloads
-                .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(
                 StatusCode::BAD_GATEWAY,
                 "Upstream resource has no content length",
@@ -2233,11 +2353,6 @@ async fn serve_new_file(
         };
 
         if fail {
-            *status.write().await =
-                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            appstate
-                .active_downloads
-                .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::SERVICE_UNAVAILABLE, "Disk quota reached");
         }
     }
@@ -2280,11 +2395,6 @@ async fn serve_new_file(
                 *mg_cache_size = csize;
             }
 
-            *status.write().await =
-                ActiveDownloadStatus::Aborted(AbortReason::AlreadyLoggedJustFail);
-            appstate
-                .active_downloads
-                .remove(&conn_details.mirror, &conn_details.debname);
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
         }
     };
@@ -2298,9 +2408,7 @@ async fn serve_new_file(
 
     let (tx, rx) = tokio::sync::watch::channel(());
 
-    *status.write().await = ActiveDownloadStatus::Download(outpath.clone(), content_length, rx);
-    // notify receivers
-    drop(init_tx);
+    ibarrier.download(outpath.clone(), content_length, rx).await;
 
     let cd = conn_details.clone();
     let st = Arc::clone(&status);
