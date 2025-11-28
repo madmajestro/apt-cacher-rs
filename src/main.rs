@@ -982,6 +982,8 @@ async fn serve_volatile_file(
     file_path: &Path,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
+    debug_assert_eq!(conn_details.cached_flavor, CachedFlavor::Volatile);
+
     let local_modification_time = match file.metadata().await {
         Ok(data) => data
             .modified()
@@ -1032,12 +1034,19 @@ async fn serve_volatile_file(
     .await
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum CachedFlavor {
+    Permanent,
+    Volatile,
+}
+
 #[derive(Clone, Debug)]
 struct ConnectionDetails {
     client: SocketAddr,
     mirror: Mirror,
     aliased_host: Option<&'static DomainName>,
     debname: String,
+    cached_flavor: CachedFlavor,
     subdir: Option<&'static Path>,
 }
 
@@ -1750,8 +1759,7 @@ async fn serve_downloading_file(
 
 enum CacheFileStat<'a> {
     Volatile((tokio::fs::File, &'a Path, SystemTime)),
-    NewVolatile,
-    NewDefault,
+    New,
 }
 
 #[must_use]
@@ -1800,7 +1808,7 @@ async fn serve_new_file(
     // TODO: upstream constant
     const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
-    let (volatile_file, warn_on_override, prev_file_size) = match &cfstate {
+    let (warn_on_override, prev_file_size) = match &cfstate {
         CacheFileStat::Volatile((file, file_path, _local_modification_time)) => {
             let size = match file.metadata().await.map(|md| md.size()) {
                 Ok(s) => s,
@@ -1813,10 +1821,9 @@ async fn serve_new_file(
                 }
             };
 
-            (true, false, size)
+            (false, size)
         }
-        CacheFileStat::NewVolatile => (true, true, 0),
-        CacheFileStat::NewDefault => (false, true, 0),
+        CacheFileStat::New => (true, 0),
     };
 
     let mut client_modified_since = None;
@@ -2160,7 +2167,9 @@ async fn serve_new_file(
             .and_then(|ct| ct.parse::<NonZero<u64>>().ok())
     }) {
         Some(size) => ContentLength::Exact(size),
-        None if volatile_file => ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER),
+        None if conn_details.cached_flavor == CachedFlavor::Volatile => {
+            ContentLength::Unknown(VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER)
+        }
         None => {
             warn!(
                 "Could not extract content-length from header for file {} from mirror {}: {fwd_response:?}",
@@ -2338,7 +2347,7 @@ async fn serve_new_file(
 
     let gcfg = global_config();
 
-    if !volatile_file
+    if conn_details.cached_flavor != CachedFlavor::Volatile
         && gcfg.experimental_parallel_hack_enabled
         && gcfg
             .experimental_parallel_hack_maxparallel
@@ -2420,7 +2429,6 @@ async fn tunnel(
 pub(crate) async fn process_cache_request(
     conn_details: ConnectionDetails,
     req: Request<Empty<()>>,
-    volatile: bool,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
     let cache_path: PathBuf = [
@@ -2442,12 +2450,19 @@ pub(crate) async fn process_cache_request(
             trace!(
                 "File {} found, serving {} version...",
                 cache_path.display(),
-                if volatile { "volatile" } else { "cached" }
+                match conn_details.cached_flavor {
+                    CachedFlavor::Permanent => "permanent",
+                    CachedFlavor::Volatile => "volatile",
+                }
             );
-            if volatile {
-                serve_volatile_file(conn_details, req, file, &cache_path, appstate).await
-            } else {
-                serve_cached_file(conn_details, req, appstate.database_tx, file, &cache_path).await
+            match conn_details.cached_flavor {
+                CachedFlavor::Volatile => {
+                    serve_volatile_file(conn_details, req, file, &cache_path, appstate).await
+                }
+                CachedFlavor::Permanent => {
+                    serve_cached_file(conn_details, req, appstate.database_tx, file, &cache_path)
+                        .await
+                }
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -2466,13 +2481,15 @@ pub(crate) async fn process_cache_request(
             );
 
             if let Some(init_tx) = init_tx {
-                let cfstate = if volatile {
-                    CacheFileStat::NewVolatile
-                } else {
-                    CacheFileStat::NewDefault
-                };
-
-                serve_new_file(conn_details, status, init_tx, req, cfstate, appstate).await
+                serve_new_file(
+                    conn_details,
+                    status,
+                    init_tx,
+                    req,
+                    CacheFileStat::New,
+                    appstate,
+                )
+                .await
             } else {
                 info!(
                     "Serving file {} already in download from mirror {} for client {}...",
@@ -2758,10 +2775,11 @@ async fn pre_process_client_request(
                         },
                         aliased_host,
                         debname: debname.into_owned(),
+                        cached_flavor: CachedFlavor::Permanent,
                         subdir: None,
                     };
 
-                    return process_cache_request(conn_details, req, false, appstate).await;
+                    return process_cache_request(conn_details, req, appstate).await;
                 }
 
                 warn_once_or_info!("Unsupported pool file extension in filename `{filename}`");
@@ -2821,10 +2839,11 @@ async fn pre_process_client_request(
                     },
                     aliased_host,
                     debname: format!("{distribution}_{filename}"),
+                    cached_flavor: CachedFlavor::Volatile,
                     subdir: Some(Path::new("dists")),
                 };
 
-                return process_cache_request(conn_details, req, true, appstate).await;
+                return process_cache_request(conn_details, req, appstate).await;
             }
             ResourceFile::ByHash(mirror_path, filename) => {
                 let mirrorname = match urlencoding::decode(mirror_path) {
@@ -2864,11 +2883,12 @@ async fn pre_process_client_request(
                     },
                     aliased_host,
                     debname: filename.to_string(),
+                    cached_flavor: CachedFlavor::Permanent,
                     subdir: Some(Path::new("dists/by-hash")),
                 };
 
                 // files requested by hash shouldn't be volatile
-                return process_cache_request(conn_details, req, false, appstate).await;
+                return process_cache_request(conn_details, req, appstate).await;
             }
             ResourceFile::Package(mirror_path, distribution, component, architecture, filename) => {
                 let mirrorname = match urlencoding::decode(mirror_path) {
@@ -2955,6 +2975,7 @@ async fn pre_process_client_request(
                     },
                     aliased_host,
                     debname: format!("{distribution}_{component}_{architecture}_{filename}"),
+                    cached_flavor: CachedFlavor::Volatile,
                     subdir: Some(Path::new("dists")),
                 };
 
@@ -2977,7 +2998,7 @@ async fn pre_process_client_request(
                     }
                 }
 
-                return process_cache_request(conn_details, req, true, appstate).await;
+                return process_cache_request(conn_details, req, appstate).await;
             }
         }
     }

@@ -16,7 +16,8 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, BufWriter};
 use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::{
-    AppState, ConnectionDetails, ProxyCacheBody, ProxyCacheError, RETENTION_TIME, RUNTIMEDETAILS,
+    AppState, CachedFlavor, ConnectionDetails, ProxyCacheBody, ProxyCacheError, RETENTION_TIME,
+    RUNTIMEDETAILS,
     config::DomainName,
     database::OriginEntry,
     deb_mirror::{Mirror, UriFormat as _},
@@ -174,10 +175,11 @@ async fn get_package_file(
                 "{distribution}_{component}_{architecture}_Packages{}",
                 pkgfmt.extension()
             ),
+            cached_flavor: CachedFlavor::Volatile,
             subdir: Some(Path::new("dists")),
         };
 
-        let response = process_cache_request(conn_details, req, true, appstate.clone()).await;
+        let response = process_cache_request(conn_details, req, appstate.clone()).await;
 
         if response.status() == StatusCode::NOT_FOUND {
             debug!("Cleanup request {uri} not found");
