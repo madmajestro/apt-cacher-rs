@@ -2161,21 +2161,26 @@ async fn serve_new_file(
 
     if let CacheFileStat::Volatile((file, file_path, local_modification_time)) = cfstate {
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
-            // Refactor when https://github.com/tokio-rs/tokio/issues/6368 is resolved
-            let std_file = file.into_std().await;
-            let std_file_path = file_path.to_path_buf();
-            let file = tokio::task::spawn_blocking(move || {
-                if let Err(err) = std_file.set_modified(SystemTime::now()) {
-                    error!(
-                        "Failed to update modification time of file `{}`:  {}",
-                        std_file_path.display(),
-                        err
-                    );
-                }
-                tokio::fs::File::from_std(std_file)
-            })
-            .await
-            .expect("task should not panic");
+            // TODO:
+            //    Find alternative, since modifying the file's modification
+            //    time causes client to re-download up-to-date content,
+            //    see https://github.com/cgzones/apt-cacher-rs/issues/45.
+            //
+            // // Refactor when https://github.com/tokio-rs/tokio/issues/6368 is resolved
+            // let std_file = file.into_std().await;
+            // let std_file_path = file_path.to_path_buf();
+            // let file = tokio::task::spawn_blocking(move || {
+            //     if let Err(err) = std_file.set_modified(SystemTime::now()) {
+            //         error!(
+            //             "Failed to update modification time of file `{}`:  {}",
+            //             std_file_path.display(),
+            //             err
+            //         );
+            //     }
+            //     tokio::fs::File::from_std(std_file)
+            // })
+            // .await
+            // .expect("task should not panic");
 
             ibarrier.finished(file_path.to_path_buf()).await;
 
