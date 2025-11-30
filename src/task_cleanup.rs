@@ -323,8 +323,7 @@ async fn task_cleanup_impl(appstate: &AppState) -> Result<(), ProxyCacheError> {
             const AUTO_REPAIR_THRESHOLD: u64 = 10 * 1024; // 10 KiB
             if difference != 0 {
                 if difference < AUTO_REPAIR_THRESHOLD {
-                    *mg_cache_size = actual_cache_size + active_downloading_size;
-                    drop(mg_cache_size);
+                    csize = actual_cache_size + active_downloading_size;
                     debug!(
                         "Auto-repaired small cache size difference of {difference} (cache_size={csize}, actual_cache_size={actual_cache_size}, active_downloading_size={active_downloading_size}, threshold={AUTO_REPAIR_THRESHOLD})"
                     );
@@ -339,6 +338,8 @@ async fn task_cleanup_impl(appstate: &AppState) -> Result<(), ProxyCacheError> {
                 );
             }
         }
+
+        *mg_cache_size = csize;
     }
 
     info!(
