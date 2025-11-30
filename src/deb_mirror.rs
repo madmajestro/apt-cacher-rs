@@ -137,6 +137,13 @@ pub(crate) enum ResourceFile<'a> {
         component: &'a str,
         filename: &'a str,
     },
+    /// A sources file
+    Sources {
+        mirror_path: &'a str,
+        distribution: &'a str,
+        component: &'a str,
+        filename: &'a str,
+    },
 }
 
 /// Parses a request path into the mirror path and the filename.
@@ -181,6 +188,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
     /*
      * debian/dists/sid/InRelease
      * debs/dists/vscodium/main/binary-amd64/Packages.gz
+     * debian/dists/sid/main/source/Sources.xz
      * debian/dists/sid/main/dep11/icons-128x128.tar.gz
      * debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba
      */
@@ -214,6 +222,24 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 distribution,
                 component,
                 architecture,
+                filename,
+            });
+        } else if filename == "Sources.gz" || filename == "Sources.xz" {
+            if parts.next()? != "source" {
+                return None;
+            }
+
+            let component = parts.next()?;
+            let distribution = parts.next()?;
+
+            if parts.next().is_some() {
+                return None;
+            }
+
+            return Some(ResourceFile::Sources {
+                mirror_path,
+                distribution,
+                component,
                 filename,
             });
         } else if filename.starts_with("icons-") {
@@ -546,6 +572,16 @@ mod tests {
                 distribution: "sid",
                 component: "main",
                 filename: "icons-128x128.tar.gz"
+            })
+        );
+
+        assert_eq!(
+            parse_request_path("debian/dists/sid/main/source/Sources.gz"),
+            Some(ResourceFile::Sources {
+                mirror_path: "debian",
+                distribution: "sid",
+                component: "main",
+                filename: "Sources.gz"
             })
         );
 

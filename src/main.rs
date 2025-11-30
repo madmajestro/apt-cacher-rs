@@ -2983,6 +2983,12 @@ async fn pre_process_client_request(
                 distribution,
                 component,
                 filename,
+            }
+            | ResourceFile::Sources {
+                mirror_path,
+                distribution,
+                component,
+                filename,
             } => {
                 validate!(mirror_path, ValidateKind::MirrorPath);
                 validate!(distribution, ValidateKind::Distribution);
