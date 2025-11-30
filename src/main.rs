@@ -30,6 +30,7 @@ use std::collections::hash_map::Entry;
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
@@ -2841,60 +2842,82 @@ async fn pre_process_client_request(
     );
 
     if let Some(resource) = parse_request_path(requested_path) {
+        #[derive(Clone, Copy)]
+        enum ValidateKind {
+            MirrorPath,
+            Distribution,
+            Component,
+            Architecture,
+            Filename,
+        }
+
+        impl Display for ValidateKind {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(match self {
+                    Self::MirrorPath => "mirror path",
+                    Self::Distribution => "distribution",
+                    Self::Component => "component",
+                    Self::Architecture => "architecture",
+                    Self::Filename => "filename",
+                })
+            }
+        }
+
+        #[inline]
+        #[must_use]
+        fn validate(name: &str, kind: ValidateKind) -> bool {
+            match kind {
+                ValidateKind::MirrorPath => valid_mirrorname(name),
+                ValidateKind::Distribution => valid_distribution(name),
+                ValidateKind::Component => valid_component(name),
+                ValidateKind::Architecture => valid_architecture(name),
+                ValidateKind::Filename => valid_filename(name),
+            }
+        }
+
+        macro_rules! validate {
+            ($name: ident, $kind: expr) => {
+                let encoded = $name;
+                let kind = $kind;
+                let decoded = match urlencoding::decode(encoded) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("Error decoding {kind} `{encoded}`:  {err}");
+                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
+                    }
+                };
+                if !validate(&decoded, kind) {
+                    warn_once_or_info!("Unsupported {kind} `{decoded}`");
+                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported request");
+                }
+
+                let $name = decoded;
+            };
+        }
+
         match resource {
-            ResourceFile::Pool(mirror_path, filename) => {
+            ResourceFile::Pool {
+                mirror_path,
+                filename,
+            } => {
                 // TODO: cache .dsc?
                 #[expect(clippy::case_sensitive_file_extension_comparisons)]
                 let is_deb = filename.ends_with(".deb");
 
                 if is_deb {
-                    // TODO: refactor decoding
-                    let mirrorname = match urlencoding::decode(mirror_path) {
-                        Ok(s) => s,
-                        Err(err) => {
-                            error!("Error decoding mirror path `{mirror_path}`:  {err}");
-                            return quick_response(
-                                StatusCode::BAD_REQUEST,
-                                "Unsupported URL encoding",
-                            );
-                        }
-                    };
-                    if !valid_mirrorname(&mirrorname) {
-                        warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
-                        return quick_response(
-                            hyper::StatusCode::BAD_REQUEST,
-                            "Unsupported mirror name",
-                        );
-                    }
+                    validate!(mirror_path, ValidateKind::MirrorPath);
+                    validate!(filename, ValidateKind::Filename);
 
-                    let debname = match urlencoding::decode(filename) {
-                        Ok(s) => s,
-                        Err(err) => {
-                            error!("Error decoding filename `{filename}`:  {err}");
-                            return quick_response(
-                                StatusCode::BAD_REQUEST,
-                                "Unsupported URL encoding",
-                            );
-                        }
-                    };
-                    if !valid_filename(&debname) {
-                        warn_once_or_info!("Unsupported file name `{debname}`");
-                        return quick_response(
-                            hyper::StatusCode::BAD_REQUEST,
-                            "Unsupported file name",
-                        );
-                    }
-
-                    trace!("Decoded mirrorname: `{mirrorname}`; Decoded debname: `{debname}`");
+                    trace!("Decoded mirror path: `{mirror_path}`; Decoded filename: `{filename}`");
 
                     let conn_details = ConnectionDetails {
                         client,
                         mirror: Mirror {
                             host: requested_host,
-                            path: mirrorname.into_owned(),
+                            path: mirror_path.into_owned(),
                         },
                         aliased_host,
-                        debname: debname.into_owned(),
+                        debname: filename.into_owned(),
                         cached_flavor: CachedFlavor::Permanent,
                         subdir: None,
                     };
@@ -2904,58 +2927,24 @@ async fn pre_process_client_request(
 
                 warn_once_or_info!("Unsupported pool file extension in filename `{filename}`");
             }
-            ResourceFile::Dists(mirror_path, distribution, filename) => {
-                let mirrorname = match urlencoding::decode(mirror_path) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding mirror path `{mirror_path}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_mirrorname(&mirrorname) {
-                    warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported mirror name",
-                    );
-                }
-
-                let distribution = match urlencoding::decode(distribution) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding distribution `{distribution}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_distribution(&distribution) {
-                    warn_once_or_info!("Unsupported distribution name `{distribution}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported distribution name",
-                    );
-                }
-
-                let filename = match urlencoding::decode(filename) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding filename `{filename}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_filename(&filename) {
-                    warn_once_or_info!("Unsupported file name `{filename}`");
-                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
-                }
+            ResourceFile::Release {
+                mirror_path,
+                distribution,
+                filename,
+            } => {
+                validate!(mirror_path, ValidateKind::MirrorPath);
+                validate!(distribution, ValidateKind::Distribution);
+                validate!(filename, ValidateKind::Filename);
 
                 trace!(
-                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded filename: `{filename}`"
+                    "Decoded mirror path: `{mirror_path}`; Decoded distribution: `{distribution}`; Decoded filename: `{filename}`"
                 );
 
                 let conn_details = ConnectionDetails {
                     client,
                     mirror: Mirror {
                         host: requested_host,
-                        path: mirrorname.into_owned(),
+                        path: mirror_path.into_owned(),
                     },
                     aliased_host,
                     debname: format!("{distribution}_{filename}"),
@@ -2965,44 +2954,23 @@ async fn pre_process_client_request(
 
                 return process_cache_request(conn_details, req, appstate).await;
             }
-            ResourceFile::ByHash(mirror_path, filename) => {
-                let mirrorname = match urlencoding::decode(mirror_path) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding mirror path `{mirror_path}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_mirrorname(&mirrorname) {
-                    warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported mirror name",
-                    );
-                }
+            ResourceFile::ByHash {
+                mirror_path,
+                filename,
+            } => {
+                validate!(mirror_path, ValidateKind::MirrorPath);
+                validate!(filename, ValidateKind::Filename);
 
-                let filename = match urlencoding::decode(filename) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding filename `{filename}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_filename(&filename) {
-                    warn_once_or_info!("Unsupported file name `{filename}`");
-                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
-                }
-
-                trace!("Decoded mirrorname: `{mirrorname}`; Decoded filename: `{filename}`");
+                trace!("Decoded mirror path: `{mirror_path}`; Decoded filename: `{filename}`");
 
                 let conn_details = ConnectionDetails {
                     client,
                     mirror: Mirror {
                         host: requested_host,
-                        path: mirrorname.into_owned(),
+                        path: mirror_path.into_owned(),
                     },
                     aliased_host,
-                    debname: filename.to_string(),
+                    debname: filename.into_owned(),
                     cached_flavor: CachedFlavor::Permanent,
                     subdir: Some(Path::new("dists/by-hash")),
                 };
@@ -3016,72 +2984,20 @@ async fn pre_process_client_request(
                 component,
                 filename,
             } => {
-                let mirrorname = match urlencoding::decode(mirror_path) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding mirror path `{mirror_path}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_mirrorname(&mirrorname) {
-                    warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported mirror name",
-                    );
-                }
-
-                let distribution = match urlencoding::decode(distribution) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding distribution `{distribution}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_distribution(&distribution) {
-                    warn_once_or_info!("Unsupported distribution name `{distribution}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported distribution name",
-                    );
-                }
-
-                let component = match urlencoding::decode(component) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding component `{component}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_component(&component) {
-                    warn!("Unsupported component name `{component}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported component name",
-                    );
-                }
-
-                let filename = match urlencoding::decode(filename) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding filename `{filename}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_filename(&filename) {
-                    warn_once_or_info!("Unsupported file name `{filename}`");
-                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
-                }
+                validate!(mirror_path, ValidateKind::MirrorPath);
+                validate!(distribution, ValidateKind::Distribution);
+                validate!(component, ValidateKind::Component);
+                validate!(filename, ValidateKind::Filename);
 
                 trace!(
-                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded filename: `{filename}`"
+                    "Decoded mirror path: `{mirror_path}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded filename: `{filename}`"
                 );
 
                 let conn_details = ConnectionDetails {
                     client,
                     mirror: Mirror {
                         host: requested_host,
-                        path: mirrorname.into_owned(),
+                        path: mirror_path.into_owned(),
                     },
                     aliased_host,
                     debname: format!("{distribution}_{component}_{filename}"),
@@ -3091,88 +3007,28 @@ async fn pre_process_client_request(
 
                 return process_cache_request(conn_details, req, appstate).await;
             }
-            ResourceFile::Package(mirror_path, distribution, component, architecture, filename) => {
-                let mirrorname = match urlencoding::decode(mirror_path) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding mirror path `{mirror_path}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_mirrorname(&mirrorname) {
-                    warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported mirror name",
-                    );
-                }
-
-                let distribution = match urlencoding::decode(distribution) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding distribution `{distribution}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_distribution(&distribution) {
-                    warn_once_or_info!("Unsupported distribution name `{distribution}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported distribution name",
-                    );
-                }
-
-                let component = match urlencoding::decode(component) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding component `{component}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_component(&component) {
-                    warn!("Unsupported component name `{component}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported component name",
-                    );
-                }
-
-                let architecture = match urlencoding::decode(architecture) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding architecture `{architecture}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_architecture(&architecture) {
-                    warn_once_or_info!("Unsupported architecture name `{architecture}`");
-                    return quick_response(
-                        hyper::StatusCode::BAD_REQUEST,
-                        "Unsupported architecture name",
-                    );
-                }
-
-                let filename = match urlencoding::decode(filename) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        error!("Error decoding filename `{filename}`:  {err}");
-                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
-                    }
-                };
-                if !valid_filename(&filename) {
-                    warn_once_or_info!("Unsupported file name `{filename}`");
-                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
-                }
+            ResourceFile::Packages {
+                mirror_path,
+                distribution,
+                component,
+                architecture,
+                filename,
+            } => {
+                validate!(mirror_path, ValidateKind::MirrorPath);
+                validate!(distribution, ValidateKind::Distribution);
+                validate!(component, ValidateKind::Component);
+                validate!(architecture, ValidateKind::Architecture);
+                validate!(filename, ValidateKind::Filename);
 
                 trace!(
-                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded architecture: `{architecture}`; Decoded filename: `{filename}`"
+                    "Decoded mirror path: `{mirror_path}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded architecture: `{architecture}`; Decoded filename: `{filename}`"
                 );
 
                 let conn_details = ConnectionDetails {
                     client,
                     mirror: Mirror {
                         host: requested_host,
-                        path: mirrorname.into_owned(),
+                        path: mirror_path.into_owned(),
                     },
                     aliased_host,
                     debname: format!("{distribution}_{component}_{architecture}_{filename}"),

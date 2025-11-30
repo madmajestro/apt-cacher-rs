@@ -106,15 +106,31 @@ impl UriFormat for &crate::database::OriginEntry {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ResourceFile<'a> {
-    /// A pool file consisting of the mirror path and the filename
-    Pool(&'a str, &'a str),
-    /// A dists file consisting of the mirror path, the distribution, and the filename
-    Dists(&'a str, &'a str, &'a str),
-    /// A package file consisting of the mirror path, the distribution, the component, the architecture, and the filename
-    Package(&'a str, &'a str, &'a str, &'a str, &'a str),
-    /// A file named and acquired by its hash value consisting of the mirror path and the filename
-    ByHash(&'a str, &'a str),
-    /// A icons file
+    /// A pool file
+    Pool {
+        mirror_path: &'a str,
+        filename: &'a str,
+    },
+    /// A dists file
+    Release {
+        mirror_path: &'a str,
+        distribution: &'a str,
+        filename: &'a str,
+    },
+    /// A packages file
+    Packages {
+        mirror_path: &'a str,
+        distribution: &'a str,
+        component: &'a str,
+        architecture: &'a str,
+        filename: &'a str,
+    },
+    /// A file named and acquired by its hash value
+    ByHash {
+        mirror_path: &'a str,
+        filename: &'a str,
+    },
+    /// An icons file
     Icon {
         mirror_path: &'a str,
         distribution: &'a str,
@@ -156,14 +172,17 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
             return None;
         }
 
-        return Some(ResourceFile::Pool(mirror_path, filename));
+        return Some(ResourceFile::Pool {
+            mirror_path,
+            filename,
+        });
     }
 
     /*
      * debian/dists/sid/InRelease
      * debs/dists/vscodium/main/binary-amd64/Packages.gz
-     * debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba
      * debian/dists/sid/main/dep11/icons-128x128.tar.gz
+     * debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba
      */
     if let Some((mirror_path, dists_path)) = path.rsplit_once("/dists/") {
         let mut parts = dists_path.rsplit('/');
@@ -176,7 +195,11 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 return None;
             }
 
-            return Some(ResourceFile::Dists(mirror_path, distribution, filename));
+            return Some(ResourceFile::Release {
+                mirror_path,
+                distribution,
+                filename,
+            });
         } else if filename == "Packages.gz" || filename == "Packages.xz" {
             let architecture = parts.next()?;
             let component = parts.next()?;
@@ -186,13 +209,13 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 return None;
             }
 
-            return Some(ResourceFile::Package(
+            return Some(ResourceFile::Packages {
                 mirror_path,
                 distribution,
                 component,
                 architecture,
                 filename,
-            ));
+            });
         } else if filename.starts_with("icons-") {
             if parts.next()? != "dep11" {
                 return None;
@@ -201,7 +224,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
             let component = parts.next()?;
             let distribution = parts.next()?;
 
-            if parts.next()? != "dists" {
+            if parts.next().is_some() {
                 return None;
             }
 
@@ -223,7 +246,10 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 return None;
             }
 
-            return Some(ResourceFile::ByHash(mirror_path, filename));
+            return Some(ResourceFile::ByHash {
+                mirror_path,
+                filename,
+            });
         }
 
         return None;
@@ -376,134 +402,151 @@ mod tests {
 
         assert_eq!(
             parse_request_path("debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb"),
-            Some(ResourceFile::Pool(
-                "debian",
-                "firefox-esr_115.9.1esr-1_amd64.deb"
-            ))
+            Some(ResourceFile::Pool {
+                mirror_path: "debian",
+                filename: "firefox-esr_115.9.1esr-1_amd64.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "private/ubuntu/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb"
             ),
-            Some(ResourceFile::Pool(
-                "private/ubuntu",
-                "firefox-esr_115.9.1esr-1_amd64.deb"
-            ))
+            Some(ResourceFile::Pool {
+                mirror_path: "private/ubuntu",
+                filename: "firefox-esr_115.9.1esr-1_amd64.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path("debian/pool/main/libs/libssh/libssh-doc_0.10.6-2_all.deb"),
-            Some(ResourceFile::Pool("debian", "libssh-doc_0.10.6-2_all.deb"))
+            Some(ResourceFile::Pool {
+                mirror_path: "debian",
+                filename: "libssh-doc_0.10.6-2_all.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "debian/pool/main/libt/libtirpc/libtirpc3t64_1.3.4%2bds-1.2_amd64.deb"
             ),
-            Some(ResourceFile::Pool(
-                "debian",
-                "libtirpc3t64_1.3.4%2bds-1.2_amd64.deb"
-            ))
+            Some(ResourceFile::Pool {
+                mirror_path: "debian",
+                filename: "libtirpc3t64_1.3.4%2bds-1.2_amd64.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path("debian/pool/main/m/mesa/libgl1-mesa-dri_24.0.5-1_amd64.deb"),
-            Some(ResourceFile::Pool(
-                "debian",
-                "libgl1-mesa-dri_24.0.5-1_amd64.deb"
-            ))
+            Some(ResourceFile::Pool {
+                mirror_path: "debian",
+                filename: "libgl1-mesa-dri_24.0.5-1_amd64.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path("public/debian/dists/sid/InRelease"),
-            Some(ResourceFile::Dists("public/debian", "sid", "InRelease"))
+            Some(ResourceFile::Release {
+                mirror_path: "public/debian",
+                distribution: "sid",
+                filename: "InRelease"
+            })
         );
 
         assert_eq!(
             parse_request_path("very///private/debian/dists/trixie/Release"),
-            Some(ResourceFile::Dists(
-                "very///private/debian",
-                "trixie",
-                "Release"
-            ))
+            Some(ResourceFile::Release {
+                mirror_path: "very///private/debian",
+                distribution: "trixie",
+                filename: "Release"
+            })
         );
 
         assert_eq!(
             parse_request_path("debs/dists/vscodium/main/binary-amd64/Packages.gz"),
-            Some(ResourceFile::Package(
-                "debs",
-                "vscodium",
-                "main",
-                "binary-amd64",
-                "Packages.gz"
-            ))
+            Some(ResourceFile::Packages {
+                mirror_path: "debs",
+                distribution: "vscodium",
+                component: "main",
+                architecture: "binary-amd64",
+                filename: "Packages.gz"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "debian-security/dists/bookworm-security/main/binary-amd64/Packages.xz"
             ),
-            Some(ResourceFile::Package(
-                "debian-security",
-                "bookworm-security",
-                "main",
-                "binary-amd64",
-                "Packages.xz"
-            ))
+            Some(ResourceFile::Packages {
+                mirror_path: "debian-security",
+                distribution: "bookworm-security",
+                component: "main",
+                architecture: "binary-amd64",
+                filename: "Packages.xz"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "/pool/dists/unstable/dists/llvm-toolchain/main/binary-amd64/Packages.gz"
             ),
-            Some(ResourceFile::Package(
-                "pool/dists/unstable",
-                "llvm-toolchain",
-                "main",
-                "binary-amd64",
-                "Packages.gz"
-            ))
+            Some(ResourceFile::Packages {
+                mirror_path: "pool/dists/unstable",
+                distribution: "llvm-toolchain",
+                component: "main",
+                architecture: "binary-amd64",
+                filename: "Packages.gz"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "/pool/dists/debian-security/pool/updates/main/c/chromium/chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb"
             ),
-            Some(ResourceFile::Pool(
-                "pool/dists/debian-security",
-                "chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb"
-            ))
+            Some(ResourceFile::Pool {
+                mirror_path: "pool/dists/debian-security",
+                filename: "chromium-common_141.0.7390.65-1%7edeb12u1_amd64.deb"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "debian/dists/sid/main/binary-amd64/Packages.diff/by-hash/SHA256/491ddac17f4b86d771a457e6b084c499dfeb9ee29004b92d5d05fe79f1f0dede"
             ),
-            Some(ResourceFile::ByHash(
-                "debian",
-                "491ddac17f4b86d771a457e6b084c499dfeb9ee29004b92d5d05fe79f1f0dede"
-            ))
+            Some(ResourceFile::ByHash {
+                mirror_path: "debian",
+                filename: "491ddac17f4b86d771a457e6b084c499dfeb9ee29004b92d5d05fe79f1f0dede"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "debian/dists/sid/main/dep11/by-hash/SHA256/cf31e359ca5863e438c1b2d3ddaa1d473519ad26bd71e3dac7803dade82e4482"
             ),
-            Some(ResourceFile::ByHash(
-                "debian",
-                "cf31e359ca5863e438c1b2d3ddaa1d473519ad26bd71e3dac7803dade82e4482"
-            ))
+            Some(ResourceFile::ByHash {
+                mirror_path: "debian",
+                filename: "cf31e359ca5863e438c1b2d3ddaa1d473519ad26bd71e3dac7803dade82e4482"
+            })
         );
 
         assert_eq!(
             parse_request_path(
                 "debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba"
             ),
-            Some(ResourceFile::ByHash(
-                "debian",
-                "4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba"
-            ))
+            Some(ResourceFile::ByHash {
+                mirror_path: "debian",
+                filename: "4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba"
+            })
+        );
+
+        assert_eq!(
+            parse_request_path("debian/dists/sid/main/dep11/icons-128x128.tar.gz"),
+            Some(ResourceFile::Icon {
+                mirror_path: "debian",
+                distribution: "sid",
+                component: "main",
+                filename: "icons-128x128.tar.gz"
+            })
         );
 
         /*
