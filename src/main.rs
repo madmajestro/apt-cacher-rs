@@ -89,7 +89,7 @@ use hyper_rustls::{ConfigBuilderExt as _, HttpsConnector};
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioIo;
-use log::{LevelFilter, debug, error, info, trace, warn};
+use log::{Level, LevelFilter, debug, error, info, log, trace, warn};
 #[cfg(feature = "mmap")]
 use memmap2::{Advice, Mmap, MmapOptions};
 use pin_project::pin_project;
@@ -2273,7 +2273,14 @@ async fn serve_new_file(
     }
 
     if fwd_response.status() != StatusCode::OK {
-        warn!(
+        let log_level = if fwd_response.status() == StatusCode::NOT_FOUND {
+            Level::Info
+        } else {
+            Level::Warn
+        };
+
+        log!(
+            log_level,
             "Request for file {} from mirror {} with URI `{req_uri}` failed with code `{}`, got response: {fwd_response:?}",
             conn_details.debname,
             conn_details.mirror,
