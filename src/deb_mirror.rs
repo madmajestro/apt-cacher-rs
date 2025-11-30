@@ -114,6 +114,13 @@ pub(crate) enum ResourceFile<'a> {
     Package(&'a str, &'a str, &'a str, &'a str, &'a str),
     /// A file named and acquired by its hash value consisting of the mirror path and the filename
     ByHash(&'a str, &'a str),
+    /// A icons file
+    Icon {
+        mirror_path: &'a str,
+        distribution: &'a str,
+        component: &'a str,
+        filename: &'a str,
+    },
 }
 
 /// Parses a request path into the mirror path and the filename.
@@ -156,6 +163,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
      * debian/dists/sid/InRelease
      * debs/dists/vscodium/main/binary-amd64/Packages.gz
      * debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba
+     * debian/dists/sid/main/dep11/icons-128x128.tar.gz
      */
     if let Some((mirror_path, dists_path)) = path.rsplit_once("/dists/") {
         let mut parts = dists_path.rsplit('/');
@@ -185,6 +193,24 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 architecture,
                 filename,
             ));
+        } else if filename.starts_with("icons-") {
+            if parts.next()? != "dep11" {
+                return None;
+            }
+
+            let component = parts.next()?;
+            let distribution = parts.next()?;
+
+            if parts.next()? != "dists" {
+                return None;
+            }
+
+            return Some(ResourceFile::Icon {
+                mirror_path,
+                distribution,
+                component,
+                filename,
+            });
         } else if filename.len() >= 64 && filename.chars().all(|c| c.is_ascii_hexdigit()) {
             let hash_algorithm = parts.next()?;
 

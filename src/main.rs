@@ -3010,6 +3010,87 @@ async fn pre_process_client_request(
                 // files requested by hash shouldn't be volatile
                 return process_cache_request(conn_details, req, appstate).await;
             }
+            ResourceFile::Icon {
+                mirror_path,
+                distribution,
+                component,
+                filename,
+            } => {
+                let mirrorname = match urlencoding::decode(mirror_path) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("Error decoding mirror path `{mirror_path}`:  {err}");
+                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
+                    }
+                };
+                if !valid_mirrorname(&mirrorname) {
+                    warn_once_or_info!("Unsupported mirror name `{mirrorname}`");
+                    return quick_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        "Unsupported mirror name",
+                    );
+                }
+
+                let distribution = match urlencoding::decode(distribution) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("Error decoding distribution `{distribution}`:  {err}");
+                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
+                    }
+                };
+                if !valid_distribution(&distribution) {
+                    warn_once_or_info!("Unsupported distribution name `{distribution}`");
+                    return quick_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        "Unsupported distribution name",
+                    );
+                }
+
+                let component = match urlencoding::decode(component) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("Error decoding component `{component}`:  {err}");
+                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
+                    }
+                };
+                if !valid_component(&component) {
+                    warn!("Unsupported component name `{component}`");
+                    return quick_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        "Unsupported component name",
+                    );
+                }
+
+                let filename = match urlencoding::decode(filename) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("Error decoding filename `{filename}`:  {err}");
+                        return quick_response(StatusCode::BAD_REQUEST, "Unsupported URL encoding");
+                    }
+                };
+                if !valid_filename(&filename) {
+                    warn_once_or_info!("Unsupported file name `{filename}`");
+                    return quick_response(hyper::StatusCode::BAD_REQUEST, "Unsupported file name");
+                }
+
+                trace!(
+                    "Decoded mirrorname: `{mirrorname}`; Decoded distribution: `{distribution}`; Decoded component: `{component}`; Decoded filename: `{filename}`"
+                );
+
+                let conn_details = ConnectionDetails {
+                    client,
+                    mirror: Mirror {
+                        host: requested_host,
+                        path: mirrorname.into_owned(),
+                    },
+                    aliased_host,
+                    debname: format!("{distribution}_{component}_{filename}"),
+                    cached_flavor: CachedFlavor::Volatile,
+                    subdir: Some(Path::new("dists/")),
+                };
+
+                return process_cache_request(conn_details, req, appstate).await;
+            }
             ResourceFile::Package(mirror_path, distribution, component, architecture, filename) => {
                 let mirrorname = match urlencoding::decode(mirror_path) {
                     Ok(s) => s,
