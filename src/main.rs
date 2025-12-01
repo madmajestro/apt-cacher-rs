@@ -58,6 +58,7 @@ use clap::Parser;
 use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
 use http_range::http_parse_range;
+use hyper::Uri;
 use hyper::body::Frame;
 use hyper::body::Incoming;
 use hyper::body::SizeHint;
@@ -255,6 +256,7 @@ fn quick_response<T: Into<bytes::Bytes>>(
     Response::builder()
         .status(status)
         .header(SERVER, HeaderValue::from_static(APP_NAME))
+        .header(CONNECTION, HeaderValue::from_static("keep-alive"))
         .body(ProxyCacheBody::Full(Full::new(message.into())))
         .expect("Response is valid")
 }
@@ -1947,6 +1949,91 @@ async fn serve_new_file(
     // TODO: upstream constant
     const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
+    #[must_use]
+    fn build_fwd_request(
+        uri: &Uri,
+        max_age: u32,
+        host: &HeaderValue,
+        cfstate: &CacheFileStat<'_>,
+    ) -> Request<Empty<bytes::Bytes>> {
+        /*
+         * Request {
+         *      method: GET,
+         *      uri: http://deb.debian.org/debian/pool/main/g/gcc-snapshot/gcc-snapshot_20240117-1_amd64.deb,
+         *      version: HTTP/1.1,
+         *      headers: {
+         *          "host": "deb.debian.org",
+         *          "range": "bytes=34744111-",
+         *          "if-range": "Thu, 18 Jan 2024 08:28:16 GMT",
+         *          "user-agent": "Debian APT-HTTP/1.3 (2.7.10)"
+         *      },
+         *      body: Body(Empty)
+         * }
+         *
+         * Response {
+         *      status: 206,
+         *      version: HTTP/1.1,
+         *      headers: {
+         *          "connection": "keep-alive",
+         *          "content-length": "1036690709",
+         *          "server": "Apache",
+         *          "x-content-type-options": "nosniff",
+         *          "x-frame-options": "sameorigin",
+         *          "referrer-policy": "no-referrer",
+         *          "x-xss-protection": "1",
+         *          "permissions-policy": "interest-cohort=()",
+         *          "last-modified": "Thu, 18 Jan 2024 08:28:16 GMT",
+         *          "etag": "\"3fdccc44-60f3425268f75\"",
+         *          "x-clacks-overhead": "GNU Terry Pratchett",
+         *          "cache-control": "public, max-age=2592000",
+         *          "content-type": "application/vnd.debian.binary-package",
+         *          "via": "1.1 varnish, 1.1 varnish",
+         *          "accept-ranges": "bytes",
+         *          "age": "500053",
+         *          "content-range": "bytes 34744111-1071434819/1071434820",
+         *          "date": "Mon, 29 Jan 2024 12:59:10 GMT",
+         *          "x-served-by": "cache-ams21080-AMS, cache-fra-eddf8230020-FRA",
+         *          "x-cache": "HIT, HIT",
+         *          "x-cache-hits": "33, 0",
+         *          "x-timer": "S1706533151.962674,VS0,VE2"
+         *      },
+         *      body: Body(Streaming)
+         * }
+         */
+
+        let mut request = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
+            .header(HOST, host)
+            .body(Empty::new())
+            .expect("request should be valid");
+
+        if let CacheFileStat::Volatile {
+            file: _,
+            file_path: _,
+            local_creation_time: _,
+            local_modification_time,
+        } = cfstate
+        {
+            let date_fmt = systemtime_to_http_datetime(*local_modification_time);
+
+            let r = request.headers_mut().append(
+                IF_MODIFIED_SINCE,
+                HeaderValue::try_from(date_fmt).expect("HTTP datetime should be valid"),
+            );
+            assert!(!r);
+
+            let r = request.headers_mut().append(
+                CACHE_CONTROL,
+                HeaderValue::try_from(format!("max-age={max_age}")).expect("string is valid"),
+            );
+            assert!(!r);
+        }
+
+        request
+    }
+
     let ibarrier = InitBarrier::new(
         init_tx,
         &status,
@@ -1980,11 +2067,13 @@ async fn serve_new_file(
 
     let mut client_modified_since = None;
     let mut max_age = 300;
+    let mut host = None;
 
     for (name, value) in req.headers() {
         match name {
-            &USER_AGENT | &RANGE | &IF_RANGE | &HOST | &ACCEPT => (),
+            &USER_AGENT | &RANGE | &IF_RANGE | &ACCEPT => (),
             n if n == PROXY_CONNECTION => (),
+            &HOST => host = Some(value),
             /*
              * TODO:
              * Ignore client cache settings for now.
@@ -2010,53 +2099,10 @@ async fn serve_new_file(
             ),
         }
     }
-
-    /*
-     * Request {
-     *      method: GET,
-     *      uri: http://deb.debian.org/debian/pool/main/g/gcc-snapshot/gcc-snapshot_20240117-1_amd64.deb,
-     *      version: HTTP/1.1,
-     *      headers: {
-     *          "host": "deb.debian.org",
-     *          "range": "bytes=34744111-",
-     *          "if-range": "Thu, 18 Jan 2024 08:28:16 GMT",
-     *          "user-agent": "Debian APT-HTTP/1.3 (2.7.10)"
-     *      },
-     *      body: Body(Empty)
-     * }
-     *
-     * Response {
-     *      status: 206,
-     *      version: HTTP/1.1,
-     *      headers: {
-     *          "connection": "keep-alive",
-     *          "content-length": "1036690709",
-     *          "server": "Apache",
-     *          "x-content-type-options": "nosniff",
-     *          "x-frame-options": "sameorigin",
-     *          "referrer-policy": "no-referrer",
-     *          "x-xss-protection": "1",
-     *          "permissions-policy": "interest-cohort=()",
-     *          "last-modified": "Thu, 18 Jan 2024 08:28:16 GMT",
-     *          "etag": "\"3fdccc44-60f3425268f75\"",
-     *          "x-clacks-overhead": "GNU Terry Pratchett",
-     *          "cache-control": "public, max-age=2592000",
-     *          "content-type": "application/vnd.debian.binary-package",
-     *          "via": "1.1 varnish, 1.1 varnish",
-     *          "accept-ranges": "bytes",
-     *          "age": "500053",
-     *          "content-range": "bytes 34744111-1071434819/1071434820",
-     *          "date": "Mon, 29 Jan 2024 12:59:10 GMT",
-     *          "x-served-by": "cache-ams21080-AMS, cache-fra-eddf8230020-FRA",
-     *          "x-cache": "HIT, HIT",
-     *          "x-cache-hits": "33, 0",
-     *          "x-timer": "S1706533151.962674,VS0,VE2"
-     *      },
-     *      body: Body(Streaming)
-     * }
-     */
-
-    let fwd_host = match req.headers().get(HOST) {
+    // mark immutable
+    let client_modified_since = client_modified_since;
+    let max_age = max_age;
+    let host = match host {
         Some(h) => h,
         None => &HeaderValue::from_str(&conn_details.mirror.host)
             .expect("connection host should be valid"),
@@ -2064,36 +2110,7 @@ async fn serve_new_file(
 
     let mut req_uri = std::borrow::Cow::Borrowed(req.uri());
 
-    let mut fwd_request = Request::builder()
-        .method(Method::GET)
-        .uri(&*req_uri)
-        .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
-        .header(HOST, fwd_host)
-        .body(Empty::new())
-        .expect("request should be valid");
-
-    if let CacheFileStat::Volatile {
-        file: _,
-        file_path: _,
-        local_creation_time: _,
-        local_modification_time,
-    } = &cfstate
-    {
-        let date_fmt = systemtime_to_http_datetime(*local_modification_time);
-
-        let r = fwd_request.headers_mut().append(
-            IF_MODIFIED_SINCE,
-            HeaderValue::try_from(date_fmt).expect("HTTP datetime should be valid"),
-        );
-        assert!(!r);
-
-        let r = fwd_request.headers_mut().append(
-            CACHE_CONTROL,
-            HeaderValue::try_from(format!("max-age={max_age}")).expect("string is valid"),
-        );
-        assert!(!r);
-    }
-
+    let fwd_request = build_fwd_request(&req_uri, max_age, host, &cfstate);
     trace!("Forwarded request: {fwd_request:?}");
 
     let mut fwd_response = match request_with_retry(&appstate.https_client, fwd_request).await {
@@ -2121,36 +2138,9 @@ async fn serve_new_file(
         if let Some(moved_host) = moved_uri.host()
             && is_host_allowed(moved_host)
         {
-            let mut redirected_request = Request::builder()
-                .method(Method::GET)
-                .uri(&moved_uri)
-                .header(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT))
-                .header(HOST, moved_host)
-                .body(Empty::new())
-                .expect("request should be valid");
             req_uri = std::borrow::Cow::Owned(moved_uri);
 
-            if let CacheFileStat::Volatile {
-                file: _,
-                file_path: _,
-                local_creation_time: _,
-                local_modification_time,
-            } = &cfstate
-            {
-                let date_fmt = systemtime_to_http_datetime(*local_modification_time);
-
-                let r = redirected_request.headers_mut().append(
-                    IF_MODIFIED_SINCE,
-                    HeaderValue::try_from(date_fmt).expect("HTTP datetime should be valid"),
-                );
-                assert!(!r);
-
-                let r = redirected_request.headers_mut().append(
-                    CACHE_CONTROL,
-                    HeaderValue::try_from(format!("max-age={max_age}")).expect("string is valid"),
-                );
-                assert!(!r);
-            }
+            let redirected_request = build_fwd_request(&req_uri, max_age, host, &cfstate);
 
             trace!("Forwarded redirected request: {redirected_request:?}");
 
@@ -2158,7 +2148,7 @@ async fn serve_new_file(
                 match request_with_retry(&appstate.https_client, redirected_request).await {
                     Ok(r) => r,
                     Err(err) => {
-                        warn!("Proxy redirected request to host {fwd_host:?} failed:  {err}");
+                        warn!("Proxy redirected request to host {host:?} failed:  {err}");
                         return quick_response(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "Proxy request failed",
@@ -2515,6 +2505,7 @@ async fn serve_new_file(
             let mut response = Response::builder()
                 .status(gcfg.experimental_parallel_hack_statuscode)
                 .header(SERVER, HeaderValue::from_static(APP_NAME))
+                .header(CONNECTION, HeaderValue::from_static("keep-alive"))
                 .body(ProxyCacheBody::Empty(Empty::new()))
                 .expect("Response is valid");
 
