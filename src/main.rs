@@ -1568,8 +1568,8 @@ async fn serve_unfinished_file(
             loop {
                 let mut buf = bytes::BytesMut::with_capacity(buf_size);
                 let ret = match reader.read_buf(&mut buf).await {
-                    Ok(r) if r > 0 => r,
-                    Ok(_) => break,
+                    Ok(0) => break, // EOF
+                    Ok(r) => r,
                     Err(err) => {
                         error!("Error reading from file `{}`:  {err}", file_path.display());
                         return;
@@ -2457,10 +2457,11 @@ async fn serve_new_file(
         )
         .await;
 
-        {
-            let ads = st.read().await;
-            assert!(!matches!(*ads, ActiveDownloadStatus::Init(_)));
-            if !matches!(*(ads), ActiveDownloadStatus::Finished(_)) {
+        match *st.read().await {
+            ActiveDownloadStatus::Init(_) => unreachable!("was set to download state already"),
+            ActiveDownloadStatus::Download(..) => unreachable!("download has finished"),
+            ActiveDownloadStatus::Finished(_) => (),
+            ActiveDownloadStatus::Aborted(_) => {
                 trace!(
                     "Adjusting cache size for file {} not finished downloading by {} plus previous file size {prev_file_size}",
                     cd.debname,
@@ -3244,15 +3245,16 @@ fn is_broken_pipe(err: &hyper::Error) -> bool {
 }
 
 #[must_use]
-fn is_timeout(err: &hyper::Error) -> bool {
-    err.source().is_some_and(|source_err| {
-        source_err
-            .downcast_ref::<ProxyCacheError>()
-            .is_some_and(|pe| {
-                matches!(pe, ProxyCacheError::ClientDownloadRate(_))
-                    || matches!(pe, ProxyCacheError::MirrorDownloadRate(_))
-            })
-    })
+fn is_timeout(err: &hyper::Error) -> Option<&ProxyCacheError> {
+    let pe = err.source()?.downcast_ref::<ProxyCacheError>()?;
+
+    if matches!(pe, ProxyCacheError::ClientDownloadRate(_))
+        || matches!(pe, ProxyCacheError::MirrorDownloadRate(_))
+    {
+        Some(pe)
+    } else {
+        None
+    }
 }
 
 async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -3477,12 +3479,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         "Broken pipe for client {}:  {err}",
                         client.ip().to_canonical()
                     );
-                } else if is_timeout(&err) {
-                    let perr = err
-                        .source()
-                        .expect("Error has source")
-                        .downcast_ref::<ProxyCacheError>()
-                        .expect("Error is Proxyerror");
+                } else if let Some(perr) = is_timeout(&err) {
                     info!("{perr}");
                 } else {
                     error!(
