@@ -43,7 +43,7 @@ pub(crate) fn http_parse_range(
     range: &str,
     if_range: Option<&str>,
     file_size: u64,
-    modification_time: SystemTime,
+    cache_time: SystemTime,
 ) -> Option<(String, u64, u64)> {
     if file_size == 0 {
         return None;
@@ -97,7 +97,7 @@ pub(crate) fn http_parse_range(
     if let Some(if_range) = if_range {
         let if_time = http_datetime_to_systemtime(if_range)?;
 
-        if if_time < modification_time {
+        if if_time < cache_time {
             return None;
         }
     }

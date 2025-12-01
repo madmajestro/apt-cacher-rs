@@ -705,9 +705,11 @@ async fn serve_cached_file(
     };
 
     let file_size = metadata.len();
-    let modification_date = metadata
-        .modified()
-        .expect("platform should support modification time");
+    // Cache entries are replaced on update not overridden so the birth time is the time the file was last modified.
+    // The modified file timestamp is used to store the last up-to-date check against the upstream mirror.
+    let last_modified = metadata
+        .created()
+        .expect("Platform should support creation timestamps via setup check");
 
     let (http_status, content_start, content_length, content_range, partial) = if let Some(range) =
         req.headers().get(RANGE).and_then(|val| val.to_str().ok())
@@ -717,7 +719,7 @@ async fn serve_cached_file(
                 .get(IF_RANGE)
                 .and_then(|val| val.to_str().ok()),
             file_size,
-            modification_date,
+            last_modified,
         ) {
         (
             StatusCode::PARTIAL_CONTENT,
@@ -752,7 +754,7 @@ async fn serve_cached_file(
         database_tx,
         file,
         file_path,
-        modification_date,
+        last_modified,
         http_status,
         content_length,
         content_start,
@@ -767,7 +769,7 @@ async fn serve_cached_file(
         file,
         file_path,
         file_size,
-        modification_date,
+        last_modified,
         http_status,
         content_length,
         content_start,
@@ -786,7 +788,7 @@ async fn serve_cached_file_mmap(
     database_tx: tokio::sync::mpsc::Sender<DatabaseCommand>,
     file: tokio::fs::File,
     file_path: &Path,
-    modification_date: SystemTime,
+    last_modified: SystemTime,
     http_status: StatusCode,
     content_length: usize,
     content_start: u64,
@@ -856,7 +858,7 @@ async fn serve_cached_file_mmap(
 
     serve_cached_file_response(
         http_status,
-        modification_date,
+        last_modified,
         content_length as u64,
         body,
         content_range,
@@ -871,7 +873,7 @@ async fn serve_cached_file_buf(
     mut file: tokio::fs::File,
     file_path: &Path,
     file_size: u64,
-    modification_date: SystemTime,
+    last_modified: SystemTime,
     http_status: StatusCode,
     content_length: u64,
     start: u64,
@@ -899,7 +901,7 @@ async fn serve_cached_file_buf(
 
     serve_cached_file_response(
         http_status,
-        modification_date,
+        last_modified,
         content_length,
         body,
         content_range,
@@ -908,7 +910,7 @@ async fn serve_cached_file_buf(
 
 fn serve_cached_file_response(
     http_status: StatusCode,
-    modification_date: SystemTime,
+    last_modified: SystemTime,
     content_length: u64,
     body: ProxyCacheBody,
     content_range: Option<String>,
@@ -948,7 +950,7 @@ fn serve_cached_file_response(
         )
         .header(
             LAST_MODIFIED,
-            HeaderValue::try_from(systemtime_to_http_datetime(modification_date))
+            HeaderValue::try_from(systemtime_to_http_datetime(last_modified))
                 .expect("date string is valid"),
         )
         .header(ACCEPT_RANGES, HeaderValue::from_static("bytes"))
@@ -987,13 +989,16 @@ async fn serve_volatile_file(
 ) -> Response<ProxyCacheBody> {
     debug_assert_eq!(conn_details.cached_flavor, CachedFlavor::Volatile);
 
-    let local_modification_time = match file.metadata().await {
-        Ok(data) => data
-            .modified()
-            .expect("Platform should support modification timestamps"),
+    let (local_creation_time, local_modification_time) = match file.metadata().await {
+        Ok(data) => (
+            data.created()
+                .expect("Platform should support creation timestamps via setup check"),
+            data.modified()
+                .expect("Platform should support modification timestamps via setup check"),
+        ),
         Err(err) => {
             error!(
-                "Failed to get modification timestamp of file `{}`:  {err}",
+                "Failed to get metadata of file `{}`:  {err}",
                 file_path.display()
             );
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -1031,7 +1036,12 @@ async fn serve_volatile_file(
         status,
         init_tx,
         req,
-        CacheFileStat::Volatile((file, file_path, local_modification_time)),
+        CacheFileStat::Volatile {
+            file,
+            file_path,
+            local_creation_time,
+            local_modification_time,
+        },
         appstate,
     )
     .await
@@ -1531,25 +1541,11 @@ async fn serve_unfinished_file(
         }
     };
 
-    let create_time = match md.created() {
-        Ok(data) => data,
-        Err(created_err) => {
-            info_once!(
-                "Failed to get create timestamp for file `{}`:  {created_err}",
-                file_path.display()
-            );
-            match md.modified() {
-                Ok(data) => data,
-                Err(modified_err) => {
-                    error!(
-                        "Failed to get create and modify timestamp of file `{}`:  {created_err}  //  {modified_err}",
-                        file_path.display()
-                    );
-                    return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Error");
-                }
-            }
-        }
-    };
+    // Cache entries are replaced on update not overridden so the birth time is the time the file was last modified.
+    // The modified file timestamp is used to store the last up-to-date check against the upstream mirror.
+    let last_modified = md
+        .created()
+        .expect("Platform should support creation timestamps via setup check");
 
     let (tx, rx) = tokio::sync::mpsc::channel(64);
 
@@ -1680,7 +1676,7 @@ async fn serve_unfinished_file(
         .header(SERVER, HeaderValue::from_static(APP_NAME))
         .header(
             LAST_MODIFIED,
-            HeaderValue::try_from(systemtime_to_http_datetime(create_time))
+            HeaderValue::try_from(systemtime_to_http_datetime(last_modified))
                 .expect("Http datetime is valid"),
         );
     if let ContentLength::Exact(size) = content_length {
@@ -1825,7 +1821,12 @@ async fn serve_downloading_file(
 }
 
 enum CacheFileStat<'a> {
-    Volatile((tokio::fs::File, &'a Path, SystemTime)),
+    Volatile {
+        file: tokio::fs::File,
+        file_path: &'a Path,
+        local_creation_time: SystemTime,
+        local_modification_time: SystemTime,
+    },
     New,
 }
 
@@ -1955,7 +1956,12 @@ async fn serve_new_file(
     );
 
     let (warn_on_override, prev_file_size) = match &cfstate {
-        CacheFileStat::Volatile((file, file_path, _local_modification_time)) => {
+        CacheFileStat::Volatile {
+            file,
+            file_path,
+            local_creation_time: _,
+            local_modification_time: _,
+        } => {
             let size = match file.metadata().await.map(|md| md.size()) {
                 Ok(s) => s,
                 Err(err) => {
@@ -2066,7 +2072,13 @@ async fn serve_new_file(
         .body(Empty::new())
         .expect("request should be valid");
 
-    if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) = &cfstate {
+    if let CacheFileStat::Volatile {
+        file: _,
+        file_path: _,
+        local_creation_time: _,
+        local_modification_time,
+    } = &cfstate
+    {
         let date_fmt = systemtime_to_http_datetime(*local_modification_time);
 
         let r = fwd_request.headers_mut().append(
@@ -2118,7 +2130,12 @@ async fn serve_new_file(
                 .expect("request should be valid");
             req_uri = std::borrow::Cow::Owned(moved_uri);
 
-            if let CacheFileStat::Volatile((_file, _file_path, local_modification_time)) = &cfstate
+            if let CacheFileStat::Volatile {
+                file: _,
+                file_path: _,
+                local_creation_time: _,
+                local_modification_time,
+            } = &cfstate
             {
                 let date_fmt = systemtime_to_http_datetime(*local_modification_time);
 
@@ -2160,28 +2177,31 @@ async fn serve_new_file(
         }
     }
 
-    if let CacheFileStat::Volatile((file, file_path, local_modification_time)) = cfstate {
+    if let CacheFileStat::Volatile {
+        file,
+        file_path,
+        local_creation_time,
+        local_modification_time: _,
+    } = cfstate
+    {
         if fwd_response.status() == StatusCode::NOT_MODIFIED {
-            // TODO:
-            //    Find alternative, since modifying the file's modification
-            //    time causes client to re-download up-to-date content,
-            //    see https://github.com/cgzones/apt-cacher-rs/issues/45.
-            //
-            // // Refactor when https://github.com/tokio-rs/tokio/issues/6368 is resolved
-            // let std_file = file.into_std().await;
-            // let std_file_path = file_path.to_path_buf();
-            // let file = tokio::task::spawn_blocking(move || {
-            //     if let Err(err) = std_file.set_modified(SystemTime::now()) {
-            //         error!(
-            //             "Failed to update modification time of file `{}`:  {}",
-            //             std_file_path.display(),
-            //             err
-            //         );
-            //     }
-            //     tokio::fs::File::from_std(std_file)
-            // })
-            // .await
-            // .expect("task should not panic");
+            // Refactor when https://github.com/tokio-rs/tokio/issues/6368 is resolved
+            let file = {
+                let std_file = file.into_std().await;
+                let std_file_path = file_path.to_path_buf();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(err) = std_file.set_modified(SystemTime::now()) {
+                        error!(
+                            "Failed to update modification time of file `{}`:  {}",
+                            std_file_path.display(),
+                            err
+                        );
+                    }
+                    tokio::fs::File::from_std(std_file)
+                })
+                .await
+                .expect("task should not panic")
+            };
 
             ibarrier.finished(file_path.to_path_buf()).await;
 
@@ -2194,7 +2214,7 @@ async fn serve_new_file(
                 .to_str()
                 .ok()
                 .and_then(http_datetime_to_systemtime)
-                && client_modified_time >= local_modification_time
+                && client_modified_time >= local_creation_time
             {
                 info!(
                     "Serving info about up-to-date cached file {} from mirror {} for client {}",
@@ -2236,9 +2256,7 @@ async fn serve_new_file(
                         AGE,
                         HeaderValue::try_from(format!(
                             "{}",
-                            local_modification_time
-                                .elapsed()
-                                .map_or(0, |dur| dur.as_secs())
+                            local_creation_time.elapsed().map_or(0, |dur| dur.as_secs())
                         ))
                         .expect("string is valid"),
                     ) // TODO: send AGE in other branches as well

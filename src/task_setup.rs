@@ -19,9 +19,10 @@ pub(crate) fn task_setup() -> anyhow::Result<()> {
     std::fs::create_dir_all(cache_path)
         .with_context(|| format!("Failed to create directory `{}`", cache_path.display()))?;
 
-    /* Check for modification timestamp support */
+    /* Check for creation and modification timestamp support */
     let mdata = std::fs::metadata(cache_path)
         .with_context(|| format!("Failed to inspect directory `{}`", cache_path.display()))?;
+    mdata.created().context("No creation timestamp support")?;
     mdata
         .modified()
         .context("No modification timestamp support")?;
