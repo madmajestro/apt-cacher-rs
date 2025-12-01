@@ -15,11 +15,10 @@ macro_rules! warn_once_or_info {
     ($($t:tt)*) => {{
         static FIRED: std::sync::OnceLock<std::marker::PhantomData<bool>> =
             std::sync::OnceLock::new();
-        match FIRED.set(std::marker::PhantomData) {
-            Ok(()) => log::warn!($($t)*),
-            Err(_) => log::info!($($t)*),
-        }
-
+        log::log!(match FIRED.set(std::marker::PhantomData) {
+            Ok(()) => log::Level::Warn,
+            Err(_) => log::Level::Info,
+        },$($t)*);
     }};
 }
 
