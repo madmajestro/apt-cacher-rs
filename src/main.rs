@@ -70,7 +70,6 @@ use hyper::header::CONNECTION;
 use hyper::header::CONTENT_LENGTH;
 use hyper::header::CONTENT_RANGE;
 use hyper::header::CONTENT_TYPE;
-use hyper::header::DATE;
 use hyper::header::HOST;
 use hyper::header::HeaderName;
 use hyper::header::HeaderValue;
@@ -678,7 +677,7 @@ impl Body for MmapBody {
 #[must_use]
 async fn serve_cached_file(
     conn_details: ConnectionDetails,
-    req: Request<Empty<()>>,
+    req: &Request<Empty<()>>,
     database_tx: tokio::sync::mpsc::Sender<DatabaseCommand>,
     file: tokio::fs::File,
     file_path: &Path,
@@ -1016,7 +1015,17 @@ async fn serve_volatile_file(
             file_path.display(),
             HumanFmt::Time(elapsed)
         );
-        return serve_cached_file(conn_details, req, appstate.database_tx, file, file_path).await;
+        let client_modified_since = req.headers().get(IF_MODIFIED_SINCE);
+        return serve_cached_file_modified_since(
+            conn_details,
+            &req,
+            appstate.database_tx,
+            file,
+            file_path,
+            local_creation_time,
+            client_modified_since,
+        )
+        .await;
     }
 
     let (init_tx, status) = appstate
@@ -1773,7 +1782,7 @@ async fn serve_downloading_file(
                     }
                 };
 
-                return serve_cached_file(conn_details, req, database_tx, file, &path_clone).await;
+                return serve_cached_file(conn_details, &req, database_tx, file, &path_clone).await;
             }
             ActiveDownloadStatus::Download(path, content_length, receiver) => {
                 // Cannot use mmap(2) since the file is not yet completely written
@@ -1935,6 +1944,87 @@ mod init_barrier {
             }
         }
     }
+}
+
+async fn serve_cached_file_modified_since(
+    conn_details: ConnectionDetails,
+    req: &Request<Empty<()>>,
+    database_tx: tokio::sync::mpsc::Sender<DatabaseCommand>,
+    file: tokio::fs::File,
+    file_path: &Path,
+    local_creation_time: SystemTime,
+    client_modified_since: Option<&HeaderValue>,
+) -> Response<ProxyCacheBody> {
+    let Some(client_modified_since) = client_modified_since else {
+        return serve_cached_file(conn_details, req, database_tx, file, file_path).await;
+    };
+
+    if let Some(client_modified_time) = client_modified_since
+        .to_str()
+        .ok()
+        .and_then(http_datetime_to_systemtime)
+        && client_modified_time >= local_creation_time
+    {
+        info!(
+            "Serving info about up-to-date cached file {} from mirror {} for client {}",
+            conn_details.debname,
+            conn_details.mirror,
+            conn_details.client.ip().to_canonical()
+        );
+
+        /*
+         * Response {
+         *     status: 304,
+         *     version: HTTP/1.1,
+         *     headers: {
+         *         "connection": "keep-alive",
+         *         "date": "Sat, 08 Jun 2024 12:50:39 GMT",
+         *         "via": "1.1 varnish",
+         *         "cache-control": "public, max-age=120",
+         *         "etag": "\"306ed-61a5ca11810f3\"",
+         *         "age": "104",
+         *         "x-served-by": "cache-fra-eddf8230031-FRA",
+         *         "x-cache": "HIT",
+         *         "x-cache-hits": "1",
+         *         "x-timer": "S1717851040.758717,VS0,VE1"
+         *     },
+         *     body: Body(Empty)
+         * }
+         */
+
+        let response = Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(CONNECTION, HeaderValue::from_static("keep-alive"))
+            .header(SERVER, HeaderValue::from_static(APP_NAME))
+            // .header(
+            //     CACHE_CONTROL,
+            //     HeaderValue::try_from(format!("public, max-age={max_age}"))
+            //         .expect("string is valid"),
+            // ) // TODO: send CACHE_CONTROL in other branches as well
+            .header(
+                AGE,
+                HeaderValue::try_from(format!(
+                    "{}",
+                    local_creation_time.elapsed().map_or(0, |dur| dur.as_secs())
+                ))
+                .expect("string is valid"),
+            ) // TODO: send AGE in other branches as well
+            .body(ProxyCacheBody::Empty(Empty::new()))
+            .expect("HTTP response is valid");
+
+        trace!("Outgoing response of up-to-date cached file: {response:?}");
+
+        return response;
+    }
+
+    info!(
+        "File {} from mirror {} is up-to-date in cache, serving to client {} with older version",
+        conn_details.debname,
+        conn_details.mirror,
+        conn_details.client.ip().to_canonical()
+    );
+
+    serve_cached_file(conn_details, req, database_tx, file, file_path).await
 }
 
 #[must_use]
@@ -2195,83 +2285,16 @@ async fn serve_new_file(
 
             ibarrier.finished(file_path.to_path_buf()).await;
 
-            let Some(client_modified_since) = client_modified_since else {
-                return serve_cached_file(conn_details, req, appstate.database_tx, file, file_path)
-                    .await;
-            };
-
-            if let Some(client_modified_time) = client_modified_since
-                .to_str()
-                .ok()
-                .and_then(http_datetime_to_systemtime)
-                && client_modified_time >= local_creation_time
-            {
-                info!(
-                    "Serving info about up-to-date cached file {} from mirror {} for client {}",
-                    conn_details.debname,
-                    conn_details.mirror,
-                    conn_details.client.ip().to_canonical()
-                );
-
-                /*
-                 * Response {
-                 *     status: 304,
-                 *     version: HTTP/1.1,
-                 *     headers: {
-                 *         "connection": "keep-alive",
-                 *         "date": "Sat, 08 Jun 2024 12:50:39 GMT",
-                 *         "via": "1.1 varnish",
-                 *         "cache-control": "public, max-age=120",
-                 *         "etag": "\"306ed-61a5ca11810f3\"",
-                 *         "age": "104",
-                 *         "x-served-by": "cache-fra-eddf8230031-FRA",
-                 *         "x-cache": "HIT",
-                 *         "x-cache-hits": "1",
-                 *         "x-timer": "S1717851040.758717,VS0,VE1"
-                 *     },
-                 *     body: Body(Empty)
-                 * }
-                 */
-
-                let mut response = Response::builder()
-                    .status(StatusCode::NOT_MODIFIED)
-                    .header(CONNECTION, HeaderValue::from_static("keep-alive"))
-                    .header(SERVER, HeaderValue::from_static(APP_NAME))
-                    .header(
-                        CACHE_CONTROL,
-                        HeaderValue::try_from(format!("public, max-age={max_age}"))
-                            .expect("string is valid"),
-                    ) // TODO: send CACHE_CONTROL in other branches as well
-                    .header(
-                        AGE,
-                        HeaderValue::try_from(format!(
-                            "{}",
-                            local_creation_time.elapsed().map_or(0, |dur| dur.as_secs())
-                        ))
-                        .expect("string is valid"),
-                    ) // TODO: send AGE in other branches as well
-                    .body(ProxyCacheBody::Empty(Empty::new()))
-                    .expect("HTTP response is valid");
-
-                if let Some(date) = fwd_response.headers_mut().remove(DATE) {
-                    let r = response.headers_mut().append(DATE, date);
-                    assert!(!r);
-                }
-
-                trace!("Outgoing response of up-to-date cached file: {response:?}");
-
-                return response;
-            }
-
-            info!(
-                "File {} from mirror {} is up-to-date in cache, serving to client {} with older version",
-                conn_details.debname,
-                conn_details.mirror,
-                conn_details.client.ip().to_canonical()
-            );
-
-            return serve_cached_file(conn_details, req, appstate.database_tx, file, file_path)
-                .await;
+            return serve_cached_file_modified_since(
+                conn_details,
+                &req,
+                appstate.database_tx,
+                file,
+                file_path,
+                local_creation_time,
+                client_modified_since,
+            )
+            .await;
         }
 
         debug!(
@@ -2591,7 +2614,7 @@ pub(crate) async fn process_cache_request(
                     serve_volatile_file(conn_details, req, file, &cache_path, appstate).await
                 }
                 CachedFlavor::Permanent => {
-                    serve_cached_file(conn_details, req, appstate.database_tx, file, &cache_path)
+                    serve_cached_file(conn_details, &req, appstate.database_tx, file, &cache_path)
                         .await
                 }
             }
