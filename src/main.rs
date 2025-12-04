@@ -201,6 +201,32 @@ async fn tokio_mkstemp(
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Scheme {
+    Http,
+    Https,
+}
+
+impl Display for Scheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        })
+    }
+}
+
+impl From<Scheme> for http::uri::Scheme {
+    fn from(scheme: Scheme) -> Self {
+        match scheme {
+            Scheme::Http => Self::HTTP,
+            Scheme::Https => Self::HTTPS,
+        }
+    }
+}
+
+static SCHEME_CACHE: OnceLock<parking_lot::RwLock<HashMap<String, Scheme>>> = OnceLock::new();
+
 pub(crate) async fn request_with_retry(
     client: &Client,
     request: Request<Empty<bytes::Bytes>>,
@@ -213,7 +239,43 @@ pub(crate) async fn request_with_retry(
         "Invariant of Empty"
     );
 
-    let (parts, _body) = request.into_parts();
+    let (mut parts, _body) = request.into_parts();
+
+    let orig_scheme = parts.uri.scheme().cloned();
+
+    let cached_scheme = parts.uri.host().and_then(|host| {
+        SCHEME_CACHE
+            .get()
+            .expect("Initialized in main()")
+            .read()
+            .get(host)
+            .copied()
+    });
+
+    let mut https_upgrade_test = false;
+
+    if orig_scheme == Some(http::uri::Scheme::HTTPS) {
+        debug!("Not altering https scheme for request {}", parts.uri);
+    } else if let Some(scheme) = cached_scheme {
+        debug!(
+            "Using cached scheme {scheme} for host {}, original scheme is {orig_scheme:?}",
+            parts.uri.host().expect("host must exist for a cache entry")
+        );
+
+        let mut uri_parts = parts.uri.into_parts();
+        uri_parts.scheme = Some(scheme.into());
+        parts.uri = Uri::from_parts(uri_parts).expect("valid parts");
+    } else if let Some(host) = parts.uri.host() {
+        debug!(
+            "No cached scheme for host {host}, trying https upgrade from original scheme {orig_scheme:?}..."
+        );
+
+        // try https upgrade
+        let mut uri_parts = parts.uri.into_parts();
+        uri_parts.scheme = Some(http::uri::Scheme::HTTPS);
+        parts.uri = Uri::from_parts(uri_parts).expect("valid parts");
+        https_upgrade_test = true;
+    }
 
     let mut attempt = 1;
     let mut sleep_prev = 0;
@@ -223,7 +285,42 @@ pub(crate) async fn request_with_retry(
         let req_clone = Request::from_parts(parts.clone(), Empty::new());
 
         match client.request(req_clone).await {
-            Ok(response) => return Ok(response),
+            Ok(response) => {
+                if cached_scheme.is_none()
+                    && let Some(host) = parts.uri.host()
+                {
+                    match parts.uri.scheme() {
+                        Some(s) if *s == http::uri::Scheme::HTTP => {
+                            let r = SCHEME_CACHE
+                                .get()
+                                .expect("Initialized in main()")
+                                .write()
+                                .insert(host.to_owned(), Scheme::Http);
+                            if r.is_none() {
+                                debug!(
+                                    "Added cached http scheme for host {host}, original scheme was {orig_scheme:?}"
+                                );
+                            }
+                        }
+                        Some(s) if *s == http::uri::Scheme::HTTPS => {
+                            let r = SCHEME_CACHE
+                                .get()
+                                .expect("Initialized in main()")
+                                .write()
+                                .insert(host.to_owned(), Scheme::Https);
+                            if r.is_none() {
+                                debug!(
+                                    "Added cached https scheme for host {host}, original scheme was {orig_scheme:?}"
+                                );
+                            }
+                        }
+                        s => {
+                            debug!("Not caching unsupported scheme {s:?} for host {host}");
+                        }
+                    }
+                }
+                return Ok(response);
+            }
             Err(err) if !err.is_connect() => {
                 warn_once_or_info!(
                     "Request of internal client to {} failed:  {err}  --  {err:?}",
@@ -237,7 +334,39 @@ pub(crate) async fn request_with_retry(
                     parts.uri
                 );
 
+                if attempt > 2 && https_upgrade_test {
+                    assert_eq!(
+                        cached_scheme, None,
+                        "https upgrade is only tried when no cached scheme exists"
+                    );
+
+                    debug!(
+                        "Https upgrade failed after {attempt} connection attempts, re-trying with original scheme {orig_scheme:?}..."
+                    );
+
+                    // reset https upgrade
+                    let mut uri_parts = parts.uri.into_parts();
+                    uri_parts.scheme.clone_from(&orig_scheme);
+                    parts.uri = Uri::from_parts(uri_parts).expect("valid parts");
+                    https_upgrade_test = false;
+                    sleep_prev = 0;
+                    sleep_curr = 500;
+                    continue;
+                }
+
                 if attempt > MAX_RETRIES {
+                    if let Some(host) = parts.uri.host()
+                        && let Some(scheme) = SCHEME_CACHE
+                            .get()
+                            .expect("Initialized in main()")
+                            .write()
+                            .remove(host)
+                    {
+                        debug!(
+                            "Removed cached scheme {scheme} for host {host} after {attempt} connection attempts, original scheme was {orig_scheme:?}"
+                        );
+                    }
+
                     return Err(err);
                 }
 
@@ -3656,6 +3785,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     UNCACHEABLES
         .set(parking_lot::RwLock::new(RingBuffer::new(nonzero!(20))))
+        .expect("Initial set in main() should succeed");
+
+    SCHEME_CACHE
+        .set(parking_lot::RwLock::new(HashMap::new()))
         .expect("Initial set in main() should succeed");
 
     CombinedLogger::init(vec![

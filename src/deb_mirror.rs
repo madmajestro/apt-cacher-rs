@@ -83,7 +83,7 @@ impl UriFormat for Origin {
     fn uri(&self) -> String {
         /* deb.debian.org/debian/dists/sid/main/binary-amd64/Packages */
         format!(
-            "https://{}/{}/dists/{}/{}/{}/Packages",
+            "http://{}/{}/dists/{}/{}/{}/Packages",
             self.mirror.host,
             self.mirror.path,
             self.distribution,
@@ -98,7 +98,7 @@ impl UriFormat for &crate::database::OriginEntry {
     fn uri(&self) -> String {
         /* deb.debian.org/debian/dists/sid/main/binary-amd64/Packages */
         format!(
-            "https://{}/{}/dists/{}/{}/{}/Packages",
+            "http://{}/{}/dists/{}/{}/{}/Packages",
             self.host, self.mirror_path, self.distribution, self.component, self.architecture
         )
     }
@@ -365,7 +365,7 @@ mod tests {
         );
         assert_eq!(
             result.uri(),
-            "https://deb.debian.org/debian/dists/sid/main/binary-amd64/Packages"
+            "http://deb.debian.org/debian/dists/sid/main/binary-amd64/Packages"
         );
     }
 
@@ -391,7 +391,7 @@ mod tests {
         );
         assert_eq!(
             result.uri(),
-            "https://site.example.com/private/debian/dists/sid/main/binary-amd64/Packages"
+            "http://site.example.com/private/debian/dists/sid/main/binary-amd64/Packages"
         );
     }
 
@@ -416,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             result.uri(),
-            "https://apt.llvm.org/unstable/dists/llvm-toolchain-19/main/binary-amd64/Packages"
+            "http://apt.llvm.org/unstable/dists/llvm-toolchain-19/main/binary-amd64/Packages"
         );
     }
 
