@@ -215,9 +215,9 @@ pub(crate) async fn request_with_retry(
 
     let (parts, _body) = request.into_parts();
 
-    let mut tries = 0;
-    let mut sleep_prev = 1;
-    let mut sleep_curr = 1;
+    let mut attempt = 1;
+    let mut sleep_prev = 0;
+    let mut sleep_curr = 500;
 
     loop {
         let req_clone = Request::from_parts(parts.clone(), Empty::new());
@@ -232,13 +232,18 @@ pub(crate) async fn request_with_retry(
                 return Err(err);
             }
             Err(err) => {
-                if tries >= MAX_RETRIES {
+                debug!(
+                    "Failed to connect to {} after {attempt} connection attempts, will retry in {sleep_curr} ms:  {err}",
+                    parts.uri
+                );
+
+                if attempt > MAX_RETRIES {
                     return Err(err);
                 }
 
-                tries += 1;
+                attempt += 1;
 
-                tokio::time::sleep(Duration::from_secs(sleep_curr)).await;
+                tokio::time::sleep(Duration::from_millis(sleep_curr)).await;
                 (sleep_curr, sleep_prev) = (sleep_curr + sleep_prev, sleep_curr);
 
                 continue;
