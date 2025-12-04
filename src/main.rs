@@ -283,7 +283,7 @@ pub(crate) async fn request_with_retry(
     client: &Client,
     request: Request<Empty<bytes::Bytes>>,
 ) -> Result<Response<Incoming>, hyper_util::client::legacy::Error> {
-    const MAX_RETRIES: u32 = 5;
+    const MAX_ATTEMPTS: u32 = 10;
 
     debug_assert_eq!(
         request.body().size_hint().exact(),
@@ -430,7 +430,7 @@ pub(crate) async fn request_with_retry(
                     continue;
                 }
 
-                if attempt > MAX_RETRIES {
+                if attempt > MAX_ATTEMPTS {
                     if let Some(host) = parts.uri.host() {
                         let key = SchemeKeyRef {
                             host,
