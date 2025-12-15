@@ -1480,14 +1480,14 @@ mod download_barrier {
     use crate::{AbortReason, ActiveDownloadStatus};
 
     #[must_use]
-    pub(crate) struct DownloadBarrier<'a> {
+    pub(super) struct DownloadBarrier<'a> {
         tx: tokio::sync::watch::Sender<()>,
         status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
         active: bool,
     }
 
     impl<'a> DownloadBarrier<'a> {
-        pub(crate) const fn new(
+        pub(super) const fn new(
             tx: tokio::sync::watch::Sender<()>,
             status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
         ) -> Self {
@@ -1498,20 +1498,20 @@ mod download_barrier {
             }
         }
 
-        pub(crate) fn ping(&self) -> Result<(), SendError<()>> {
+        pub(super) fn ping(&self) -> Result<(), SendError<()>> {
             debug_assert!(self.active);
 
             self.tx.send(())
         }
 
-        pub(crate) async fn abort(mut self, reason: AbortReason) {
+        pub(super) async fn abort(mut self, reason: AbortReason) {
             debug_assert!(self.active);
 
             *self.status.write().await = ActiveDownloadStatus::Aborted(reason);
             self.active = false;
         }
 
-        pub(crate) fn release(
+        pub(super) fn release(
             mut self,
             mut lock: tokio::sync::RwLockWriteGuard<'_, ActiveDownloadStatus>,
             path: PathBuf,
@@ -2108,7 +2108,7 @@ mod init_barrier {
     };
 
     #[must_use]
-    pub(crate) struct InitBarrier<'a> {
+    pub(super) struct InitBarrier<'a> {
         /// Unused, receivers just needs to get notified by drop
         _tx: tokio::sync::watch::Sender<()>,
         status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
@@ -2119,7 +2119,7 @@ mod init_barrier {
     }
 
     impl<'a> InitBarrier<'a> {
-        pub(crate) fn new(
+        pub(super) fn new(
             tx: tokio::sync::watch::Sender<()>,
             status: &'a Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
             active_downloads: &'a ActiveDownloads,
@@ -2136,7 +2136,7 @@ mod init_barrier {
             }
         }
 
-        pub(crate) async fn finished(mut self, path: PathBuf) {
+        pub(super) async fn finished(mut self, path: PathBuf) {
             debug_assert!(self.active);
 
             *self.status.write().await = ActiveDownloadStatus::Finished(path);
@@ -2144,7 +2144,7 @@ mod init_barrier {
             self.active = false;
         }
 
-        pub(crate) async fn download(
+        pub(super) async fn download(
             mut self,
             path: PathBuf,
             content_length: ContentLength,
