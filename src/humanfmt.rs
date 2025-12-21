@@ -1,7 +1,7 @@
 #[must_use]
 pub(crate) enum HumanFmt {
     Size(u64),
-    Rate(u64, std::time::Duration),
+    Rate(u64, coarsetime::Duration),
     Time(std::time::Duration),
 }
 
@@ -41,7 +41,7 @@ impl std::fmt::Display for HumanFmt {
                 f.write_fmt(format_args!("{size:.0$}TB", precision(size)))
             }
             Self::Rate(bytes, time) => {
-                let time = time.as_secs_f64();
+                let time = time.as_f64();
                 if time == 0.0 {
                     return f.write_fmt(format_args!("???B/s"));
                 }
@@ -140,27 +140,42 @@ mod tests {
     #[test]
     fn rate_test() {
         assert_eq!(
-            format!("{}", HumanFmt::Rate(0, Duration::from_nanos(0))),
+            format!(
+                "{}",
+                HumanFmt::Rate(0, coarsetime::Duration::from_millis(0))
+            ),
             "???B/s"
-        );
-        assert_eq!(
-            format!("{}", HumanFmt::Rate(1000, Duration::from_nanos(0))),
-            "???B/s"
-        );
-        assert_eq!(
-            format!("{}", HumanFmt::Rate(0, Duration::from_nanos(1000))),
-            "0B/s"
-        );
-        assert_eq!(
-            format!("{}", HumanFmt::Rate(1000, Duration::from_nanos(1000))),
-            "1.00GB/s"
         );
         assert_eq!(
             format!(
                 "{}",
-                HumanFmt::Rate(u64::MAX, Duration::from_nanos(12_345_678_987_654_321))
+                HumanFmt::Rate(1000, coarsetime::Duration::from_millis(0))
             ),
-            "1.49TB/s"
+            "???B/s"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                HumanFmt::Rate(0, coarsetime::Duration::from_millis(1000))
+            ),
+            "0B/s"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                HumanFmt::Rate(1000, coarsetime::Duration::from_millis(1000))
+            ),
+            "1.00kB/s"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                HumanFmt::Rate(
+                    u64::MAX,
+                    coarsetime::Duration::from_millis(12_345_678_987_654_321)
+                )
+            ),
+            "4.29GB/s"
         );
     }
 

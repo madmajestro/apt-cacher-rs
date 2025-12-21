@@ -5,9 +5,10 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
     sync::LazyLock,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
+use coarsetime::Instant;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::{Method, Request, Response, StatusCode, header::CACHE_CONTROL};
 use log::{debug, error, info, trace, warn};
@@ -339,7 +340,7 @@ async fn task_cleanup_impl(appstate: &AppState) -> Result<(), ProxyCacheError> {
 
     info!(
         "Finished cleanup task in {}: retained {} files, removed {} files of size {}",
-        HumanFmt::Time(start.elapsed()),
+        HumanFmt::Time(start.elapsed().into()),
         files_retained,
         files_removed,
         HumanFmt::Size(bytes_removed)

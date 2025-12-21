@@ -1,11 +1,11 @@
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use build_html::Html as _;
 use build_html::HtmlContainer as _;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
+use coarsetime::Instant;
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{
@@ -346,7 +346,7 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
                 .with_table(html_table_uncacheables),
         )
         .with_container(
-            Container::new(ContainerType::Footer).with_paragraph(format!("<hr>All dates are in UTC.   --   Generated in {}.", HumanFmt::Time(start.elapsed()))),
+            Container::new(ContainerType::Footer).with_paragraph(format!("<hr>All dates are in UTC.   --   Generated in {}.", HumanFmt::Time(start.elapsed().into()))),
         )
         .to_html_string();
 

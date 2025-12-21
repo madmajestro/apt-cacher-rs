@@ -1,5 +1,6 @@
-use core::{net::IpAddr, time::Duration};
+use core::net::IpAddr;
 
+use coarsetime::Duration;
 use log::{debug, error};
 
 use crate::{
@@ -48,7 +49,7 @@ pub(crate) async fn db_loop(
                         &cmd.mirror,
                         &cmd.debname,
                         cmd.size,
-                        cmd.elapsed,
+                        cmd.elapsed.into(),
                         cmd.partial,
                         cmd.client_ip,
                     )
@@ -63,7 +64,7 @@ pub(crate) async fn db_loop(
                         &cmd.mirror,
                         &cmd.debname,
                         cmd.size,
-                        cmd.elapsed,
+                        cmd.elapsed.into(),
                         cmd.client_ip,
                     )
                     .await

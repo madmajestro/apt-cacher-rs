@@ -1,4 +1,6 @@
-use std::{net::IpAddr, time::Duration};
+use std::net::IpAddr;
+
+use coarsetime::Duration;
 
 use crate::rate_checked_body::DownloadRateError;
 use crate::{ChannelBodyError, ContentLength};

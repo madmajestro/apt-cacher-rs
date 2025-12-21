@@ -48,12 +48,12 @@ use std::sync::OnceLock;
 use std::task::Poll::Pending;
 use std::task::Poll::Ready;
 use std::time::Duration;
-use std::time::Instant;
 use std::time::SystemTime;
 
 use channel_body::ChannelBody;
 use channel_body::ChannelBodyError;
 use clap::Parser;
+use coarsetime::Instant;
 #[cfg(not(feature = "mmap"))]
 use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
@@ -578,7 +578,7 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(duration),
+                    HumanFmt::Time(duration.into()),
                     HumanFmt::Size(size),
                     HumanFmt::Rate(size, duration)
                 );
@@ -592,14 +592,14 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     client_ip: cd.client.ip(),
                 });
                 db_tx.send(cmd).await.expect("database task should not die");
-            } else if transferred_bytes == 0 && duration < Duration::from_secs(1) {
+            } else if transferred_bytes == 0 && duration < coarsetime::Duration::from_secs(1) {
                 info!(
                     "Aborted serving cached file {} from mirror {}{} for client {} after {}:  {}",
                     cd.debname,
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(duration),
+                    HumanFmt::Time(duration.into()),
                     error.unwrap_or_else(|| String::from("unknown reason")),
                 );
             } else {
@@ -609,7 +609,7 @@ impl<S> PinnedDrop for DeliveryStreamBody<S> {
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(duration),
+                    HumanFmt::Time(duration.into()),
                     HumanFmt::Size(size),
                     HumanFmt::Size(transferred_bytes),
                     HumanFmt::Rate(transferred_bytes, duration),
@@ -787,7 +787,7 @@ impl Drop for MmapBody {
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(elapsed),
+                    HumanFmt::Time(elapsed.into()),
                     HumanFmt::Size(size),
                     HumanFmt::Rate(size, elapsed)
                 );
@@ -801,14 +801,14 @@ impl Drop for MmapBody {
                     client_ip: cd.client.ip(),
                 });
                 db_tx.send(cmd).await.expect("database task should not die");
-            } else if transferred_bytes == 0 && elapsed < Duration::from_secs(1) {
+            } else if transferred_bytes == 0 && elapsed < coarsetime::Duration::from_secs(1) {
                 info!(
                     "Aborted serving cached file {} from mirror {}{} for client {} after {}",
                     cd.debname,
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(elapsed),
+                    HumanFmt::Time(elapsed.into()),
                 );
             } else {
                 warn!(
@@ -817,7 +817,7 @@ impl Drop for MmapBody {
                     cd.mirror,
                     aliased,
                     cd.client.ip().to_canonical(),
-                    HumanFmt::Time(elapsed),
+                    HumanFmt::Time(elapsed.into()),
                     HumanFmt::Size(size),
                     HumanFmt::Size(transferred_bytes),
                     HumanFmt::Rate(transferred_bytes, elapsed),
@@ -1738,7 +1738,7 @@ async fn download_file(
         conn_details.debname,
         conn_details.mirror,
         conn_details.client.ip().to_canonical(),
-        HumanFmt::Time(elapsed),
+        HumanFmt::Time(elapsed.into()),
         HumanFmt::Size(bytes),
         HumanFmt::Rate(bytes, elapsed)
     );
@@ -1882,7 +1882,7 @@ async fn serve_unfinished_file(
             conn_details.debname,
             conn_details.mirror,
             conn_details.client.ip().to_canonical(),
-            HumanFmt::Time(elapsed),
+            HumanFmt::Time(elapsed.into()),
             HumanFmt::Size(bytes),
             HumanFmt::Rate(bytes, elapsed)
         );
@@ -2796,7 +2796,7 @@ async fn tunnel(
         client.ip().to_canonical(),
         HumanFmt::Size(from_client),
         HumanFmt::Size(from_server),
-        HumanFmt::Time(start.elapsed())
+        HumanFmt::Time(start.elapsed().into())
     );
 
     Ok(())
@@ -3754,7 +3754,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             info!(
                 "Closed connection to {} after {}",
                 client.ip().to_canonical(),
-                HumanFmt::Time(client_start.elapsed())
+                HumanFmt::Time(client_start.elapsed().into())
             );
         });
     }
