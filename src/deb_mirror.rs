@@ -197,6 +197,13 @@ pub(crate) enum ResourceFile<'a> {
         component: &'a str,
         filename: &'a str,
     },
+    /// A translation file
+    Translation {
+        mirror_path: &'a str,
+        distribution: &'a str,
+        component: &'a str,
+        filename: &'a str,
+    },
 }
 
 /// Parses a request path into the mirror path and the filename.
@@ -243,12 +250,14 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
      * debs/dists/vscodium/main/binary-amd64/Packages.gz
      * debian/dists/sid/main/source/Sources.xz
      * debian/dists/sid/main/dep11/icons-128x128.tar.gz
+     * debian/dists/unstable/main/i18n/Translation-en.bz2
      * debian/dists/trixie/main/by-hash/SHA256/4f8878062744fae5ff91f1ad0f3efecc760514381bf029d06bdf7023cfc379ba
      */
     if let Some((mirror_path, dists_path)) = path.rsplit_once("/dists/") {
         let mut parts = dists_path.rsplit('/');
 
         let filename = parts.next()?;
+        #[expect(clippy::case_sensitive_file_extension_comparisons)]
         if filename == "Release" || filename == "InRelease" {
             let distribution = parts.next()?;
 
@@ -290,6 +299,24 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
             }
 
             return Some(ResourceFile::Sources {
+                mirror_path,
+                distribution,
+                component,
+                filename,
+            });
+        } else if filename.starts_with("Translation-") && filename.ends_with(".bz2") {
+            if parts.next()? != "i18n" {
+                return None;
+            }
+
+            let component = parts.next()?;
+            let distribution = parts.next()?;
+
+            if parts.next().is_some() {
+                return None;
+            }
+
+            return Some(ResourceFile::Translation {
                 mirror_path,
                 distribution,
                 component,
@@ -641,6 +668,16 @@ mod tests {
                 distribution: "sid",
                 component: "main",
                 filename: "Sources.gz"
+            })
+        );
+
+        assert_eq!(
+            parse_request_path("debian/dists/unstable/main/i18n/Translation-en.bz2"),
+            Some(ResourceFile::Translation {
+                mirror_path: "debian",
+                distribution: "unstable",
+                component: "main",
+                filename: "Translation-en.bz2"
             })
         );
 
