@@ -27,3 +27,22 @@
 curl --fail -o /dev/null --proxy 127.0.0.1:3142 http://deb.debian.org/debian/pool/main/f/firefox-esr/firefox-esr_115.9.1esr-1_amd64.deb
 
 curl -i -L --http1.1 -H "user-agent: apt-cacher-rs/0.1.0" -H "host: apt.llvm.org" -H "if-modified-since: Mon, 12 Dec 2024 18:26:22 GMT" -H "cache-control: max-age=300" http://apt.llvm.org/unstable/dists/llvm-toolchain/InRelease
+
+# Release workflow
+
+* check open GitHub issues
+* check open GitHub pull-requests
+* run `cargo update`
+* run `cargo outdated`
+* run `cargo deny check`
+* run `cargo audit`
+* run `typos`
+* run `codespell -L crate src/ apt-cacher-rs.conf apt-cacher-rs.init apt-cacher-rs.service README.md`
+* run `cargo clippy`
+* run `cargo +nightly clippy`
+* update version in *Cargo.toml*
+* run `cargo publish --dry-run`
+* create release commit with changed version number in *Cargo.toml* and *Cargo.lock*
+* run `cargo publish`
+* create and push git tag
+* create Release on GitHub
