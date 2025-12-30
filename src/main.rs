@@ -3866,13 +3866,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .expect("Initial set in main() should succeed");
 
+    let output_log_level = args.log_level.unwrap_or(config_log_level);
+
     let output_log_config = ConfigBuilder::new()
         .set_time_level(if args.skip_log_timestamp {
             LevelFilter::Off
         } else {
             LevelFilter::Error
         })
-        .set_thread_level(if config_log_level >= LevelFilter::Debug {
+        .set_thread_level(if output_log_level >= LevelFilter::Debug {
             LevelFilter::Error
         } else {
             LevelFilter::Off
@@ -3902,7 +3904,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     CombinedLogger::init(vec![
         TermLogger::new(
-            args.log_level.unwrap_or(config_log_level),
+            output_log_level,
             output_log_config,
             TerminalMode::Mixed,
             ColorChoice::Auto,
