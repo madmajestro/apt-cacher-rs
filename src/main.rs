@@ -263,6 +263,25 @@ pub(crate) async fn request_with_retry(
 ) -> Result<Response<Incoming>, hyper_util::client::legacy::Error> {
     const MAX_ATTEMPTS: u32 = 10;
 
+    struct PortFormatter<'a> {
+        port: Option<http::uri::Port<&'a str>>,
+    }
+
+    impl<'a> PortFormatter<'a> {
+        const fn new(port: Option<http::uri::Port<&'a str>>) -> Self {
+            Self { port }
+        }
+    }
+
+    impl Display for PortFormatter<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match &self.port {
+                Some(port) => write!(f, ":{port}"),
+                None => Ok(()),
+            }
+        }
+    }
+
     debug_assert_eq!(
         request.body().size_hint().exact(),
         Some(0),
@@ -294,7 +313,7 @@ pub(crate) async fn request_with_retry(
         debug!(
             "Using cached scheme {scheme} for host {}{}, original scheme is {orig_scheme:?}",
             parts.uri.host().expect("host must exist for a cache entry"),
-            parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+            PortFormatter::new(parts.uri.port())
         );
 
         let mut uri_parts = parts.uri.into_parts();
@@ -303,7 +322,7 @@ pub(crate) async fn request_with_retry(
     } else if let Some(host) = parts.uri.host() {
         debug!(
             "No cached scheme for host {host}{}, trying https upgrade from original scheme {orig_scheme:?}...",
-            parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+            PortFormatter::new(parts.uri.port())
         );
 
         // try https upgrade
@@ -342,7 +361,7 @@ pub(crate) async fn request_with_retry(
                                     ventry.insert(Scheme::Http);
                                     debug!(
                                         "Added cached http scheme for host {host}{}, original scheme was {orig_scheme:?}",
-                                        parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                        PortFormatter::new(parts.uri.port())
                                     );
                                 }
                             }
@@ -363,7 +382,7 @@ pub(crate) async fn request_with_retry(
                                     ventry.insert(Scheme::Https);
                                     debug!(
                                         "Added cached https scheme for host {host}{}, original scheme was {orig_scheme:?}",
-                                        parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                        PortFormatter::new(parts.uri.port())
                                     );
                                 }
                             }
@@ -371,7 +390,7 @@ pub(crate) async fn request_with_retry(
                         s => {
                             debug!(
                                 "Not caching unsupported scheme {s:?} for host {host}{}",
-                                parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                PortFormatter::new(parts.uri.port())
                             );
                         }
                     }
@@ -403,7 +422,7 @@ pub(crate) async fn request_with_retry(
                             .uri
                             .host()
                             .expect("host must exist for a https upgrade"),
-                        parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                        PortFormatter::new(parts.uri.port())
                     );
 
                     // reset https upgrade
@@ -431,7 +450,7 @@ pub(crate) async fn request_with_retry(
                         if let Some(scheme) = value {
                             debug!(
                                 "Removed cached scheme {scheme} for host {host}{} after {attempt} connection attempts, original scheme was {orig_scheme:?}",
-                                parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                PortFormatter::new(parts.uri.port())
                             );
                         }
                     }
