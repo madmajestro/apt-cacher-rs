@@ -24,15 +24,11 @@ mod task_cleanup;
 mod task_setup;
 mod web_interface;
 
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::io::ErrorKind;
 #[cfg(feature = "mmap")]
 use std::net::IpAddr;
@@ -56,6 +52,8 @@ use clap::Parser;
 use coarsetime::Instant;
 #[cfg(not(feature = "mmap"))]
 use futures_util::TryStreamExt as _;
+use hashbrown::Equivalent;
+use hashbrown::{HashMap, hash_map::EntryRef};
 use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
 use http_range::http_parse_range;
 use hyper::Uri;
@@ -225,55 +223,31 @@ impl From<Scheme> for http::uri::Scheme {
     }
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct SchemeKeyRef<'a> {
-    host: &'a str,
-    port: Option<u16>,
-}
-
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct SchemeKey {
     host: String,
     port: Option<u16>,
 }
 
-trait AsSchemeKeyRef {
-    #[must_use]
-    fn as_key_ref(&self) -> SchemeKeyRef<'_>;
+#[derive(Hash)]
+struct SchemeKeyRef<'a> {
+    host: &'a str,
+    port: Option<u16>,
 }
 
-impl AsSchemeKeyRef for SchemeKey {
-    fn as_key_ref(&self) -> SchemeKeyRef<'_> {
-        SchemeKeyRef {
-            host: &self.host,
+impl Equivalent<SchemeKey> for SchemeKeyRef<'_> {
+    fn equivalent(&self, key: &SchemeKey) -> bool {
+        self.host == key.host && self.port == key.port
+    }
+}
+
+#[expect(clippy::from_over_into)]
+impl Into<SchemeKey> for &SchemeKeyRef<'_> {
+    fn into(self) -> SchemeKey {
+        SchemeKey {
+            host: self.host.to_owned(),
             port: self.port,
         }
-    }
-}
-
-impl AsSchemeKeyRef for SchemeKeyRef<'_> {
-    fn as_key_ref(&self) -> SchemeKeyRef<'_> {
-        *self
-    }
-}
-
-impl PartialEq for dyn AsSchemeKeyRef + '_ {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_key_ref() == other.as_key_ref()
-    }
-}
-
-impl Eq for dyn AsSchemeKeyRef + '_ {}
-
-impl Hash for dyn AsSchemeKeyRef + '_ {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_key_ref().hash(state);
-    }
-}
-
-impl<'a> Borrow<dyn AsSchemeKeyRef + 'a> for SchemeKey {
-    fn borrow(&self) -> &(dyn AsSchemeKeyRef + 'a) {
-        self
     }
 }
 
@@ -304,7 +278,7 @@ pub(crate) async fn request_with_retry(
             .get()
             .expect("Initialized in main()")
             .read()
-            .get(&key as &dyn AsSchemeKeyRef)
+            .get(&key)
             .copied()
     });
 
@@ -349,37 +323,45 @@ pub(crate) async fn request_with_retry(
                 {
                     match parts.uri.scheme() {
                         Some(s) if *s == http::uri::Scheme::HTTP => {
-                            let key = SchemeKey {
-                                host: host.to_owned(),
+                            let key = SchemeKeyRef {
+                                host,
                                 port: parts.uri.port_u16(),
                             };
-                            let r = SCHEME_CACHE
+                            match SCHEME_CACHE
                                 .get()
                                 .expect("Initialized in main()")
                                 .write()
-                                .insert(key, Scheme::Http);
-                            if r.is_none() {
-                                debug!(
-                                    "Added cached http scheme for host {host}{}, original scheme was {orig_scheme:?}",
-                                    parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
-                                );
+                                .entry_ref(&key)
+                            {
+                                EntryRef::Occupied(_oentry) => (),
+                                EntryRef::Vacant(ventry) => {
+                                    ventry.insert(Scheme::Http);
+                                    debug!(
+                                        "Added cached http scheme for host {host}{}, original scheme was {orig_scheme:?}",
+                                        parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                    );
+                                }
                             }
                         }
                         Some(s) if *s == http::uri::Scheme::HTTPS => {
-                            let key = SchemeKey {
-                                host: host.to_owned(),
+                            let key = SchemeKeyRef {
+                                host,
                                 port: parts.uri.port_u16(),
                             };
-                            let r = SCHEME_CACHE
+                            match SCHEME_CACHE
                                 .get()
                                 .expect("Initialized in main()")
                                 .write()
-                                .insert(key, Scheme::Https);
-                            if r.is_none() {
-                                debug!(
-                                    "Added cached https scheme for host {host}{}, original scheme was {orig_scheme:?}",
-                                    parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
-                                );
+                                .entry_ref(&key)
+                            {
+                                EntryRef::Occupied(_oentry) => (),
+                                EntryRef::Vacant(ventry) => {
+                                    ventry.insert(Scheme::Https);
+                                    debug!(
+                                        "Added cached https scheme for host {host}{}, original scheme was {orig_scheme:?}",
+                                        parts.uri.port().map_or(String::new(), |p| format!(":{p}")),
+                                    );
+                                }
                             }
                         }
                         s => {
@@ -441,7 +423,7 @@ pub(crate) async fn request_with_retry(
                             .get()
                             .expect("Initialized in main()")
                             .write()
-                            .remove(&key as &dyn AsSchemeKeyRef);
+                            .remove(&key);
                         if let Some(scheme) = value {
                             debug!(
                                 "Removed cached scheme {scheme} for host {host}{} after {attempt} connection attempts, original scheme was {orig_scheme:?}",
@@ -1247,7 +1229,7 @@ async fn serve_volatile_file(
 
     let (init_tx, status) = appstate
         .active_downloads
-        .insert(conn_details.mirror.clone(), conn_details.debname.clone());
+        .insert(&conn_details.mirror, &conn_details.debname);
 
     let Some(init_tx) = init_tx else {
         debug!(
@@ -1314,55 +1296,31 @@ impl ConnectionDetails {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct ActiveDownloadKeyRef<'a> {
-    mirror: &'a Mirror,
-    debname: &'a str,
-}
-
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct ActiveDownloadKey {
     mirror: Mirror,
     debname: String,
 }
 
-trait AsActiveDownloadKeyRef {
-    #[must_use]
-    fn as_key_ref(&self) -> ActiveDownloadKeyRef<'_>;
+#[derive(Hash)]
+struct ActiveDownloadKeyRef<'a> {
+    mirror: &'a Mirror,
+    debname: &'a str,
 }
 
-impl AsActiveDownloadKeyRef for ActiveDownloadKey {
-    fn as_key_ref(&self) -> ActiveDownloadKeyRef<'_> {
-        ActiveDownloadKeyRef {
-            mirror: &self.mirror,
-            debname: &self.debname,
+impl Equivalent<ActiveDownloadKey> for ActiveDownloadKeyRef<'_> {
+    fn equivalent(&self, key: &ActiveDownloadKey) -> bool {
+        *self.mirror == key.mirror && self.debname == key.debname
+    }
+}
+
+#[expect(clippy::from_over_into)]
+impl Into<ActiveDownloadKey> for &ActiveDownloadKeyRef<'_> {
+    fn into(self) -> ActiveDownloadKey {
+        ActiveDownloadKey {
+            mirror: self.mirror.to_owned(),
+            debname: self.debname.to_owned(),
         }
-    }
-}
-
-impl AsActiveDownloadKeyRef for ActiveDownloadKeyRef<'_> {
-    fn as_key_ref(&self) -> ActiveDownloadKeyRef<'_> {
-        *self
-    }
-}
-
-impl PartialEq for dyn AsActiveDownloadKeyRef + '_ {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_key_ref() == other.as_key_ref()
-    }
-}
-
-impl Eq for dyn AsActiveDownloadKeyRef + '_ {}
-
-impl Hash for dyn AsActiveDownloadKeyRef + '_ {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_key_ref().hash(state);
-    }
-}
-
-impl<'a> Borrow<dyn AsActiveDownloadKeyRef + 'a> for ActiveDownloadKey {
-    fn borrow(&self) -> &(dyn AsActiveDownloadKeyRef + 'a) {
-        self
     }
 }
 
@@ -1405,21 +1363,20 @@ impl ActiveDownloads {
     #[must_use]
     fn insert(
         &self,
-        mirror: Mirror,
-        debname: String,
+        mirror: &Mirror,
+        debname: &str,
     ) -> (
         Option<tokio::sync::watch::Sender<()>>,
         Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     ) {
-        let key = ActiveDownloadKey { mirror, debname };
-        let mut ads = self.inner.write();
+        let key = ActiveDownloadKeyRef { mirror, debname };
 
-        match ads.entry(key) {
-            Entry::Occupied(occupied_entry) => (None, Arc::clone(occupied_entry.get())),
-            Entry::Vacant(vacant_entry) => {
+        match self.inner.write().entry_ref(&key) {
+            EntryRef::Occupied(oentry) => (None, Arc::clone(oentry.get())),
+            EntryRef::Vacant(ventry) => {
                 let (tx, rx) = tokio::sync::watch::channel(());
                 let status = Arc::new(tokio::sync::RwLock::new(ActiveDownloadStatus::Init(rx)));
-                vacant_entry.insert(Arc::clone(&status));
+                ventry.insert(Arc::clone(&status));
                 (Some(tx), status)
             }
         }
@@ -1427,10 +1384,7 @@ impl ActiveDownloads {
 
     fn remove(&self, mirror: &Mirror, debname: &str) {
         let key = ActiveDownloadKeyRef { mirror, debname };
-        let was_present = self
-            .inner
-            .write()
-            .remove(&key as &dyn AsActiveDownloadKeyRef);
+        let was_present = self.inner.write().remove(&key);
         assert!(was_present.is_some());
     }
 
@@ -2839,7 +2793,7 @@ pub(crate) async fn process_cache_request(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let (init_tx, status) = appstate
                 .active_downloads
-                .insert(conn_details.mirror.clone(), conn_details.debname.clone());
+                .insert(&conn_details.mirror, &conn_details.debname);
 
             trace!(
                 "File {} not found, serving {} version...",

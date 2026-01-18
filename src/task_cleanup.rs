@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::OsString,
     io::ErrorKind,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -9,6 +8,7 @@ use std::{
 };
 
 use coarsetime::Instant;
+use hashbrown::HashMap;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::{Method, Request, Response, StatusCode, header::CACHE_CONTROL};
 use log::{debug, error, info, trace, warn};

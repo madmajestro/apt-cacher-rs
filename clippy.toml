@@ -1,4 +1,6 @@
 disallowed-types = [
+    { path = "std::collections::HashSet", reason = "prefer faster hash set", replacement = "hashbrown::HashSet" },
+    { path = "std::collections::HashMap", reason = "prefer faster hash map", replacement = "hashbrown::HashMap" },
     { path = "std::sync::Mutex", reason = "prefer faster & simpler non-poisonable mutex", replacement = "parking_lot::Mutex" },
     { path = "std::sync::RwLock", reason = "prefer faster & simpler non-poisonable read-write lock", replacement = "parking_lot::RwLock" },
     { path = "std::time::Instant", reason = "prefer faster but less accurate coarse version", replacement = "coarsetime::Instant" },

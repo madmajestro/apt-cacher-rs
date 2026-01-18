@@ -29,6 +29,7 @@ clap = { version = "4.5.1", features = ["derive"] }
 coarsetime = "0.1.36"
 console-subscriber = { version = "0.5", optional = true }
 futures-util = "0.3.30"
+hashbrown = "0.16.1"
 http = "1.4.0"
 http-body-util = "0.1.0"
 hyper = { version = "1.2.0", features = ["full"] }
