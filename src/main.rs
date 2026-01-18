@@ -3570,7 +3570,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (db_task_tx, db_task_rx) = tokio::sync::mpsc::channel(64);
     {
         let database = database.clone();
-        tokio::spawn(db_loop(database, db_task_rx));
+        tokio::task::spawn(db_loop(database, db_task_rx));
     }
 
     {
