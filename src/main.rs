@@ -3490,24 +3490,6 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut addr = SocketAddr::from((config.bind_addr, config.bind_port.get()));
 
-    let listener = match TcpListener::bind(addr).await {
-        Ok(x) => x,
-        Err(err) => {
-            if config.bind_addr != Ipv6Addr::UNSPECIFIED {
-                error!("Error binding on {addr}:  {err}");
-                return Err(err.into());
-            }
-
-            // Fallback to IPv4 to avoid errors when IPv6 is not available and the default configuration is used.
-            addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.bind_port.get()));
-            TcpListener::bind(addr).await.map_err(|err| {
-                error!("Error binding fallback on {addr}:  {err}");
-                err
-            })?
-        }
-    };
-    info!("Listening on http://{addr}");
-
     #[cfg(all(feature = "tls_hyper", not(feature = "tls_rustls")))]
     let https_connector = HttpsConnector::new();
 
@@ -3626,6 +3608,24 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         https_client,
         active_downloads,
     };
+
+    let listener = match TcpListener::bind(addr).await {
+        Ok(x) => x,
+        Err(err) => {
+            if config.bind_addr != Ipv6Addr::UNSPECIFIED {
+                error!("Error binding on {addr}:  {err}");
+                return Err(err.into());
+            }
+
+            // Fallback to IPv4 to avoid errors when IPv6 is not available and the default configuration is used.
+            addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.bind_port.get()));
+            TcpListener::bind(addr).await.map_err(|err| {
+                error!("Error binding fallback on {addr}:  {err}");
+                err
+            })?
+        }
+    };
+    info!("Ready and listening on http://{addr}");
 
     loop {
         trace!(
