@@ -263,6 +263,7 @@ pub(crate) async fn request_with_retry(
 ) -> Result<Response<Incoming>, hyper_util::client::legacy::Error> {
     const MAX_ATTEMPTS: u32 = 10;
 
+    #[must_use]
     struct PortFormatter<'a> {
         port: Option<http::uri::Port<&'a str>>,
     }
@@ -307,8 +308,10 @@ pub(crate) async fn request_with_retry(
 
     let mut https_upgrade_test = false;
 
-    if orig_scheme == Some(http::uri::Scheme::HTTPS) {
-        debug!("Not altering https scheme for request {}", parts.uri);
+    if let Some(os) = &orig_scheme
+        && *os != http::uri::Scheme::HTTP
+    {
+        debug!("Not altering {os} scheme for request {}", parts.uri);
     } else if let Some(scheme) = cached_scheme {
         debug!(
             "Using cached scheme {scheme} for host {}{}, original scheme is {orig_scheme:?}",
@@ -405,11 +408,6 @@ pub(crate) async fn request_with_retry(
                 return Err(err);
             }
             Err(err) => {
-                debug!(
-                    "Failed to connect to {} after {attempt} connection attempts, will retry in {sleep_curr} ms:  {err}",
-                    parts.uri
-                );
-
                 if attempt > 2 && https_upgrade_test {
                     assert_eq!(
                         cached_scheme, None,
@@ -457,6 +455,11 @@ pub(crate) async fn request_with_retry(
 
                     return Err(err);
                 }
+
+                debug!(
+                    "Failed to connect to {} after {attempt} connection attempts, will retry in {sleep_curr} ms:  {err}",
+                    parts.uri
+                );
 
                 attempt += 1;
 
