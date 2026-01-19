@@ -3653,7 +3653,7 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         trace!(
             "Active downloads ({}):  {:?}",
             appstate.active_downloads.len(),
-            appstate.active_downloads
+            &*appstate.active_downloads.inner.read()
         );
 
         let next = tokio::select! {
