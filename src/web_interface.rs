@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use build_html::Html as _;
 use build_html::HtmlContainer as _;
+use build_html::HtmlElement;
 use build_html::Table;
 use build_html::{Container, ContainerType, HtmlPage};
 use coarsetime::Instant;
@@ -96,6 +97,11 @@ async fn build_mirror_table(database: &Database) -> Result<(Table, usize), Proxy
             return Err(ProxyCacheError::Sqlx(err));
         }
     };
+
+    if mirrors.is_empty() {
+        return Ok((Table::new(), 0));
+    }
+
     mirrors.sort_unstable_by_key(|mirror| -mirror.last_seen);
 
     let cache_path = &global_config().cache_directory;
@@ -200,6 +206,11 @@ async fn build_origin_table(database: &Database) -> Result<(Table, usize), Proxy
             return Err(ProxyCacheError::Sqlx(err));
         }
     };
+
+    if origins.is_empty() {
+        return Ok((Table::new(), 0));
+    }
+
     origins.sort_unstable_by_key(|origin| -origin.last_seen);
 
     for origin in origins {
@@ -234,6 +245,10 @@ async fn build_client_table(database: &Database) -> Result<(Table, usize), Proxy
         }
     };
 
+    if clients.is_empty() {
+        return Ok((Table::new(), 0));
+    }
+
     for client in clients {
         html_table_clients.add_body_row([client]);
         rows += 1;
@@ -247,14 +262,18 @@ fn build_uncacheable_table() -> (Table, usize) {
         Table::new().with_header_row(&["Requested Host", "Requested Path"]);
     let mut rows = 0;
 
-    {
-        let uncacheables = UNCACHEABLES.get().expect("Initialized in main()").read();
+    let uncacheables = UNCACHEABLES.get().expect("Initialized in main()").read();
 
-        for (host, path) in uncacheables.iter() {
-            html_table_uncacheables.add_body_row([&format!("{host}"), path]);
-            rows += 1;
-        }
+    if uncacheables.is_empty() {
+        return (Table::new(), 0);
     }
+
+    for (host, path) in uncacheables.iter() {
+        html_table_uncacheables.add_body_row([host.to_string(), path.to_owned()]);
+        rows += 1;
+    }
+
+    drop(uncacheables);
 
     (html_table_uncacheables, rows)
 }
@@ -305,54 +324,85 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
 
     let html: String = HtmlPage::new()
         .with_title("apt-cacher-rs web interface")
-        .with_header(1, "Statistics")
         .with_container(
             Container::new(ContainerType::Div)
-                .with_header(2, "Program Details")
+                .with_header(3, "Program Details")
                 .with_paragraph(format!(
-                    "Version: {}<br>Start Time: {}<br>Current Time: {}<br>Uptime: {}<br>Bind Address: {}<br>Bind Port: {}<br>Database Size: {}<br>Memory Usage: {} ({})<br>Active Downloads: {}",
+                    "Version:&nbsp;&nbsp;{} \
+                     <br>Start Time:&nbsp;&nbsp;{} \
+                     <br>Current Time:&nbsp;&nbsp;{} \
+                     <br>Uptime:&nbsp;&nbsp;{} \
+                     <br>Bind Address:&nbsp;&nbsp;{} \
+                     <br>Bind Port:&nbsp;&nbsp;{} \
+                     <br>Database Size:&nbsp;&nbsp;{} \
+                     <br>Memory Usage:&nbsp;&nbsp;{}&nbsp;&nbsp;({}) \
+                     <br>Active Downloads:&nbsp;&nbsp;{}",
                     APP_VERSION,
                     rd.start_time
                         .format(WEBUI_DATE_FORMAT)
                         .expect("timestamp should be formattable"),
-                    now
-                        .format(WEBUI_DATE_FORMAT)
+                    now.format(WEBUI_DATE_FORMAT)
                         .expect("timestamp should be formattable"),
                     HumanFmt::Time((now - rd.start_time).unsigned_abs()),
                     rd.config.bind_addr,
                     rd.config.bind_port,
                     database_size_fmt,
-                    memory_stats.map_or_else(|| String::from("???"), |ms| HumanFmt::Size(ms.physical_mem as u64).to_string()),
-                    memory_stats.map_or_else(|| String::from("???"), |ms| HumanFmt::Size(ms.virtual_mem as u64).to_string()),
+                    memory_stats.map_or_else(
+                        || String::from("???"),
+                        |ms| HumanFmt::Size(ms.physical_mem as u64).to_string()
+                    ),
+                    memory_stats.map_or_else(
+                        || String::from("???"),
+                        |ms| HumanFmt::Size(ms.virtual_mem as u64).to_string()
+                    ),
                     active_downloads
-                )).with_link("/logs", "Logs"),
+                ))
+                .with_link(
+                    "/logs",
+                    HtmlElement::new(build_html::HtmlTag::Bold).with_child("Logs".into()),
+                ),
         )
         .with_container(
             Container::new(ContainerType::Div)
-                .with_header_attr(2, "Mirrors", [("id", "mirrors-head")])
-                .with_paragraph(format!("List of proxied mirrors [{mirror_rows}]:"))
+                .with_header_attr(3, "Mirrors", [("id", "mirrors-head")])
+                .with_paragraph(format!(
+                    "List of proxied mirrors [{mirror_rows}]{}",
+                    if mirror_rows == 0 { '.' } else { ':' }
+                ))
                 .with_table(html_table_mirrors),
         )
         .with_container(
             Container::new(ContainerType::Div)
-                .with_header_attr(2, "Origins", [("id", "origins-head")])
-                .with_paragraph(format!("List of proxied origins [{origin_rows}]:"))
+                .with_header_attr(3, "Origins", [("id", "origins-head")])
+                .with_paragraph(format!(
+                    "List of proxied origins [{origin_rows}]{}",
+                    if origin_rows == 0 { '.' } else { ':' }
+                ))
                 .with_table(html_table_origins),
         )
         .with_container(
             Container::new(ContainerType::Div)
-                .with_header_attr(2, "Clients", [("id", "clients-head")])
-                .with_paragraph(format!("List of clients [{client_rows}]:"))
+                .with_header_attr(3, "Clients", [("id", "clients-head")])
+                .with_paragraph(format!(
+                    "List of clients [{client_rows}]{}",
+                    if client_rows == 0 { '.' } else { ':' }
+                ))
                 .with_table(html_table_clients),
         )
         .with_container(
             Container::new(ContainerType::Div)
-                .with_header_attr(2, "Uncacheables", [("id", "clients-head")])
-                .with_paragraph(format!("List of most recent files unable to cache [{uncacheable_rows}]:"))
+                .with_header_attr(3, "Uncacheables", [("id", "clients-head")])
+                .with_paragraph(format!(
+                    "List of most recent files unable to cache [{uncacheable_rows}]{}",
+                    if uncacheable_rows == 0 { '.' } else { ':' }
+                ))
                 .with_table(html_table_uncacheables),
         )
         .with_container(
-            Container::new(ContainerType::Footer).with_paragraph(format!("<hr>All dates are in UTC.   --   Generated in {}.", HumanFmt::Time(start.elapsed().into()))),
+            Container::new(ContainerType::Footer).with_paragraph(format!(
+                "<hr>All dates are in UTC.&nbsp;&nbsp;&nbsp;--&nbsp;&nbsp;&nbsp;Generated in {}.",
+                HumanFmt::Time(start.elapsed().into())
+            )),
         )
         .to_html_string();
 

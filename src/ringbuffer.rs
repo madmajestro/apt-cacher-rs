@@ -40,6 +40,11 @@ impl<T> RingBuffer<T> {
     }
 
     #[must_use]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    #[must_use]
     pub(crate) fn is_full(&self) -> bool {
         self.inner.len() == self.capacity.get()
     }
