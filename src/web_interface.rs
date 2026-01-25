@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use build_html::Html as _;
 use build_html::HtmlContainer as _;
@@ -319,7 +318,7 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
                     now
                         .format(WEBUI_DATE_FORMAT)
                         .expect("timestamp should be formattable"),
-                    HumanFmt::Time(Duration::from_secs_f32((now - rd.start_time).as_seconds_f32())),
+                    HumanFmt::Time((now - rd.start_time).unsigned_abs()),
                     rd.config.bind_addr,
                     rd.config.bind_port,
                     database_size_fmt,
