@@ -4,7 +4,7 @@ use coarsetime::{Duration, Instant};
 use hyper::body::{Body, Frame, SizeHint};
 use log::debug;
 
-use crate::{ProxyCacheError, nonzero, ringbuffer::SumRingBuffer};
+use crate::{HumanFmt, ProxyCacheError, nonzero, ringbuffer::SumRingBuffer};
 
 #[derive(Debug)]
 struct RateChecker {
@@ -31,8 +31,10 @@ impl RateChecker {
         if elapsed_secs >= 1 {
             if elapsed_secs > 1 {
                 debug!(
-                    "RateChecker: more than 1 second elapsed since last poll ({:.2}s)",
-                    elapsed.as_f64()
+                    "RateChecker: more than 1 second ({:.2}s) elapsed since last poll receiving {} ({})",
+                    elapsed.as_f64(),
+                    HumanFmt::Size(len as u64),
+                    HumanFmt::Rate(len as u64, elapsed)
                 );
                 for _ in 1..elapsed_secs {
                     self.buf.push(0);
