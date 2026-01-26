@@ -3539,6 +3539,34 @@ fn is_timeout(err: &hyper::Error) -> Option<&ProxyCacheError> {
     }
 }
 
+mod client_counter {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CONNECTED_CLIENTS: AtomicUsize = AtomicUsize::new(0);
+
+    #[must_use]
+    pub(crate) fn connected_clients() -> usize {
+        CONNECTED_CLIENTS.load(Ordering::Relaxed)
+    }
+
+    pub(super) struct ClientCounter {
+        _private: (),
+    }
+
+    impl ClientCounter {
+        pub(super) fn new() -> Self {
+            CONNECTED_CLIENTS.fetch_add(1, Ordering::Relaxed);
+            Self { _private: () }
+        }
+    }
+
+    impl Drop for ClientCounter {
+        fn drop(&mut self) {
+            CONNECTED_CLIENTS.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "tokio_console")]
     console_subscriber::init();
@@ -3807,6 +3835,8 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             err
         })?;
 
+        let client_counter = client_counter::ClientCounter::new();
+
         info!("New client connection from {}", client.ip().to_canonical());
         let client_start = Instant::now();
 
@@ -3857,6 +3887,8 @@ async fn main_loop() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
             }
+
+            drop(client_counter);
 
             info!(
                 "Closed connection to {} after {}",

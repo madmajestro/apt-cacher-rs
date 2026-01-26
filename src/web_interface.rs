@@ -24,6 +24,7 @@ use crate::HumanFmt;
 use crate::ProxyCacheBody;
 use crate::RUNTIMEDETAILS;
 use crate::UNCACHEABLES;
+use crate::client_counter::connected_clients;
 use crate::global_config;
 use crate::{APP_NAME, LOGSTORE, database::Database, error::ProxyCacheError, quick_response};
 
@@ -336,6 +337,7 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
                      <br>Bind Port:&nbsp;&nbsp;{} \
                      <br>Database Size:&nbsp;&nbsp;{} \
                      <br>Memory Usage:&nbsp;&nbsp;{}&nbsp;&nbsp;({}) \
+                     <br>Connected Clients:&nbsp;&nbsp;{} \
                      <br>Active Downloads:&nbsp;&nbsp;{}",
                     APP_VERSION,
                     rd.start_time
@@ -355,6 +357,7 @@ async fn serve_root(appstate: &AppState) -> Response<ProxyCacheBody> {
                         || String::from("???"),
                         |ms| HumanFmt::Size(ms.virtual_mem as u64).to_string()
                     ),
+                    connected_clients(),
                     active_downloads
                 ))
                 .with_link(
