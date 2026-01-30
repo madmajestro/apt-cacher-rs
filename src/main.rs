@@ -150,6 +150,12 @@ use crate::task_cleanup::task_cleanup;
 use crate::task_setup::task_setup;
 use crate::web_interface::serve_web_interface;
 
+#[expect(clippy::cast_possible_truncation)]
+const _: () = assert!(
+    ((usize::MAX as u64) as usize) == usize::MAX && ((u64::MAX as usize) as u64) == u64::MAX,
+    "ensure casts from usize to u64 via 'as' do not truncate"
+);
+
 type Client = hyper_util::client::legacy::Client<
     hyper_timeout::TimeoutConnector<HttpsConnector<HttpConnector>>,
     Empty<bytes::Bytes>,
