@@ -235,8 +235,12 @@ async fn task_cleanup_impl(appstate: &AppState) -> Result<(), ProxyCacheError> {
 
     let usage_retention_days = global_config().usage_retention_days;
     if usage_retention_days != 0 {
-        let keep_date =
-            SystemTime::now() - Duration::from_secs(usage_retention_days * 24 * 60 * 60);
+        let keep_date = SystemTime::now()
+            - Duration::from_secs(
+                usage_retention_days
+                    .checked_mul(24 * 60 * 60)
+                    .expect("overflow check during config parsing"),
+            );
         match keep_date.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(val) => {
                 if let Err(err) = appstate.database.delete_usage_logs(val).await {
