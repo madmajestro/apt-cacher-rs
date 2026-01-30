@@ -1660,7 +1660,7 @@ async fn download_file(
         }
     }
 
-    match content_length {
+    let size_diff = match content_length {
         ContentLength::Exact(size) => {
             if bytes != size.get() {
                 error!(
@@ -1672,6 +1672,8 @@ async fn download_file(
                 );
                 return;
             }
+
+            0
         }
         ContentLength::Unknown(size) => {
             if bytes > size.get() {
@@ -1684,8 +1686,10 @@ async fn download_file(
                 );
                 return;
             }
+
+            size.get() - bytes
         }
-    }
+    };
 
     if let Err(err) = writer.flush().await {
         error!("Error writing to file `{}`:  {err}", output.1.display());
@@ -1736,13 +1740,9 @@ async fn download_file(
         match tokio::fs::rename(&output.1, &dest_file_path).await {
             Ok(()) => {
                 {
-                    let diff =
-                        content_length.upper().get().checked_sub(bytes).expect(
-                            "should not download more bytes than announced via ContentLength",
-                        );
-                    if diff != 0 {
+                    if size_diff != 0 {
                         trace!(
-                            "Adjusting cache size by {diff} for downloaded file `{}`",
+                            "Adjusting cache size by {size_diff} for downloaded file `{}`",
                             dest_file_path.display()
                         );
 
@@ -1751,9 +1751,18 @@ async fn download_file(
                             .expect("global is set in main()")
                             .cache_size
                             .lock();
-                        *mg_cache_size = mg_cache_size
-                            .checked_sub(diff)
-                            .expect("cache size should not underflow");
+                        let csize = *mg_cache_size;
+
+                        if let Some(new_cache_size) = csize.checked_sub(size_diff) {
+                            *mg_cache_size = new_cache_size;
+                            drop(mg_cache_size);
+                        } else {
+                            error!(
+                                "Cache size corruption: entry update: file={} cache_size={csize} received_bytes={bytes} content_length={content_length:?} difference={size_diff}",
+                                conn_details.debname,
+                            );
+                            // Keep current cache_size value as is rather than corrupting it further
+                        }
                     }
                 }
 
@@ -2636,39 +2645,38 @@ async fn serve_new_file(
                 .expect("global is set in main()")
                 .cache_size
                 .lock();
-            let mut csize = *mg_cache_size;
-            let quota_reached = content_length
-                .upper()
-                .checked_add(csize)
-                .is_none_or(|sum| sum > quota);
+            let curr_csize = *mg_cache_size;
+
+            let new_csize = content_length.upper().checked_add(curr_csize);
+
+            let quota_reached = new_csize.is_none_or(|s| s > quota);
 
             if quota_reached {
                 drop(mg_cache_size);
                 warn!(
-                    "Disk quota reached: file={} cache_size={} content_length={:?} quota={}",
-                    conn_details.debname, csize, content_length, quota
+                    "Disk quota reached: file={} cache_size={curr_csize} content_length={content_length:?} quota={quota}",
+                    conn_details.debname
                 );
 
                 true
             } else {
                 trace!(
-                    "Adjusting cache size for file {} to be downloaded by {} minus previous file size {prev_file_size}",
-                    conn_details.debname,
-                    content_length.upper().get()
+                    "Adjusting cache size for file {} to be downloaded by {content_length:?} minus previous file size {prev_file_size}",
+                    conn_details.debname
                 );
 
-                csize = csize
-                    .checked_add(content_length.upper().get())
-                    .expect("should not overflow by previous check");
-                match csize.checked_sub(prev_file_size) {
-                    Some(val) => csize = val,
-                    None => {
-                        error!(
-                            "Cache size corruption: current={csize} previous_file_size={prev_file_size}"
-                        );
-                    }
-                }
-                *mg_cache_size = csize;
+                let new_csize = new_csize.expect("checked via previous if branch").get();
+                let new_csize = if let Some(val) = new_csize.checked_sub(prev_file_size) {
+                    val
+                } else {
+                    error!(
+                        "Cache size corruption: quote revert: file={} current_cache_size={curr_csize} content_length={content_length:?} previous_file_size={prev_file_size}",
+                        conn_details.debname
+                    );
+                    new_csize
+                };
+
+                *mg_cache_size = new_csize;
 
                 false
             }
@@ -2707,12 +2715,21 @@ async fn serve_new_file(
                     .expect("global is set in main()")
                     .cache_size
                     .lock();
-                let mut csize = *mg_cache_size;
-                csize = csize.saturating_sub(content_length.upper().get());
-                csize = csize
-                    .checked_add(prev_file_size)
-                    .expect("size should not overflow");
-                *mg_cache_size = csize;
+                let curr_csize = *mg_cache_size;
+
+                if let Some(new_csize) = curr_csize
+                    .checked_sub(content_length.upper().get())
+                    .and_then(|csize| csize.checked_add(prev_file_size))
+                {
+                    *mg_cache_size = new_csize;
+                    drop(mg_cache_size);
+                } else {
+                    error!(
+                        "Cache size corruption: file create failure: file={} cache_size={curr_csize}, content_length={content_length:?} prev_file_size={prev_file_size}",
+                        conn_details.debname
+                    );
+                    // Keep current cache_size value as is rather than corrupting it further
+                }
             }
 
             return quick_response(StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure");
@@ -2762,12 +2779,21 @@ async fn serve_new_file(
                     .expect("global is set in main()")
                     .cache_size
                     .lock();
-                let mut csize = *mg_cache_size;
-                csize = csize.saturating_sub(content_length.upper().get());
-                csize = csize
-                    .checked_add(prev_file_size)
-                    .expect("size should not overflow");
-                *mg_cache_size = csize;
+                let curr_csize = *mg_cache_size;
+
+                if let Some(new_csize) = curr_csize
+                    .checked_sub(content_length.upper().get())
+                    .and_then(|csize| csize.checked_add(prev_file_size))
+                {
+                    *mg_cache_size = new_csize;
+                    drop(mg_cache_size);
+                } else {
+                    error!(
+                        "Cache size corruption: download abort: file={} cache_size={curr_csize}, content_length={content_length:?} prev_file_size={prev_file_size}",
+                        cd.debname
+                    );
+                    // Keep current cache_size value as is rather than corrupting it further
+                }
             }
         }
 
