@@ -1661,8 +1661,30 @@ async fn download_file(
     }
 
     match content_length {
-        ContentLength::Exact(size) => assert_eq!(bytes, size.get()),
-        ContentLength::Unknown(size) => assert!(bytes <= size.get()),
+        ContentLength::Exact(size) => {
+            if bytes != size.get() {
+                error!(
+                    "Content length mismatch: expected {} but got {} for file {} from mirror {}",
+                    size.get(),
+                    bytes,
+                    conn_details.debname,
+                    conn_details.mirror
+                );
+                return;
+            }
+        }
+        ContentLength::Unknown(size) => {
+            if bytes > size.get() {
+                error!(
+                    "Content exceeded unknown limit: got {} but limit is {} for file {} from mirror {}",
+                    bytes,
+                    size.get(),
+                    conn_details.debname,
+                    conn_details.mirror
+                );
+                return;
+            }
+        }
     }
 
     if let Err(err) = writer.flush().await {
