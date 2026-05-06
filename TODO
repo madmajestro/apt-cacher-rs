@@ -40,12 +40,13 @@ curl -i -L --http1.1 -H "user-agent: apt-cacher-rs/0.1.0" -H "host: apt.llvm.org
    6.  run `cargo audit`
    7.  run `typos`
    8.  run `codespell -L crate src/ debian/ deny.toml apt-cacher-rs.init README.md TODO`
-  10.  run `cargo clippy`
-  11.  run `cargo +nightly clippy`
-  12.  update version in *Cargo.toml*
+   9.  run `cargo clippy`
+  10.  run `cargo +nightly clippy`
+  11.  update version in *Cargo.toml* and run `cargo check` (to update *Cargo.lock*)
+  12.  create release commit with changed version number in *Cargo.toml* and *Cargo.lock*
   13.  run `cargo publish --dry-run`
-  14.  create release commit with changed version number in *Cargo.toml* and *Cargo.lock*
-  15.  run `cargo publish`
-  16.  create git tag: `git tag -a -s -m "apt-cacher-rs release 0.0.0" v0.0.0`
-  17.  push git tag: `git push origin v0.0.0`
-  18.  create Release on GitHub
+  14.  run `cargo publish`
+  15.  create git tag: `git tag -a -s -m "apt-cacher-rs release 0.0.0" v0.0.0`
+  16.  push git tag: `git push origin v0.0.0`
+  17.  wait for *Generate Debian Package* workflow to succeed and generate Release Draft
+  18.  publish the draft Release on GitHub
