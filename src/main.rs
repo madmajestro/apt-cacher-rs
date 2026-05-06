@@ -4232,7 +4232,7 @@ async fn main_loop(
 
             trace!(
                 "Scheme cache:  {:?}",
-                &*SCHEME_CACHE.get().expect("initialized in main()").read()
+                *SCHEME_CACHE.get().expect("initialized in main()").read()
             );
 
             debug!("Scheme cache initialization task finished");
