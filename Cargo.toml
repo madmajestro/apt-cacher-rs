@@ -3,7 +3,7 @@ name = "apt-cacher-rs"
 version = "0.8.0-rc.2"
 authors = ["Christian Göttsche <cgzones@googlemail.com>"]
 license = "MIT"
-description = "A caching proxy for Debian style package repositories"
+description = "Caching proxy for Debian style package repositories"
 readme = "README.md"
 repository = "https://github.com/cgzones/apt-cacher-rs"
 keywords = ["Debian", "proxy", "cache", "deb", "apt"]
@@ -231,10 +231,33 @@ assets = [
         "/usr/sbin/apt-cacher-rs",
         "755",
     ],
+    [
+        "debian/apt-cacher-rs.8",
+        "/usr/share/man/man8/apt-cacher-rs.8",
+        "644",
+    ],
+    [
+        "debian/lintian-overrides",
+        "/usr/share/lintian/overrides/apt-cacher-rs",
+        "644",
+    ],
 ]
-conflicts = "apt-cacher-ng"
-extended-description = "A caching proxy for Debian style package repositories"
+section = "net"
+depends = "$auto, adduser"
+conflicts = "apt-cacher, apt-cacher-ng"
+extended-description = """\
+apt-cacher-rs is a caching HTTP proxy for APT-style package repositories,
+written in Rust. It sits between APT clients and upstream Debian or Ubuntu
+mirrors, transparently storing downloaded packages, indexes and metadata
+so that subsequent requests are served from the local cache without
+re-fetching them over the network.
+
+It is intended as a smaller, faster and memory-safe alternative to
+apt-cacher-ng for hosts that need to share package downloads across
+multiple machines."""
 maintainer-scripts = "debian/"
+changelog = "debian/changelog"
+license-file = ["LICENSE", "0"]
 systemd-units = { enable = true, start = true }
 default-features = false
 features = ["mmap", "tls_hyper", "sendfile"]

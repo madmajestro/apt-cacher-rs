@@ -1,5 +1,6 @@
 [Unit]
 Description=apt repository cache
+Documentation=man:apt-cacher-rs(8) https://github.com/cgzones/apt-cacher-rs
 After=network.target nss-lookup.target
 
 [Service]

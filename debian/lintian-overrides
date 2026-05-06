@@ -1,0 +1,12 @@
+# This package is built from upstream sources and is not distributed via the
+# Debian archive, so there is no ITP bug to close in the initial changelog entry.
+apt-cacher-rs: initial-upload-closes-no-bugs
+
+# Rust binaries do not link against the libc fortified function wrappers
+# (_FORTIFY_SOURCE), so this hardening check does not apply.
+apt-cacher-rs: hardening-no-fortify-functions
+
+# False positives: `strings` extracts these short tokens from compiled
+# machine code, not from human-readable text in the binary.
+apt-cacher-rs: spelling-error-in-binary ment meant *
+apt-cacher-rs: spelling-error-in-binary thIk think *

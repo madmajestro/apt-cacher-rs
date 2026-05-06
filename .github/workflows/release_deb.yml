@@ -32,7 +32,31 @@ jobs:
           tool: cargo-deb
 
       - name: Build Debian package
-        run: cargo deb
+        # `--strip` runs `strip --strip-all`, which also drops the
+        # `.comment` section that `[profile.release] strip = true` leaves
+        # behind. cargo-deb has no option to add an md5sums control file,
+        # so it is generated below.
+        run: cargo deb --strip
+
+      - name: Add md5sums control file
+        run: |
+          set -euo pipefail
+          deb=$(ls target/debian/*.deb)
+          tmp=$(mktemp -d)
+          dpkg-deb -R "$deb" "$tmp"
+          (cd "$tmp" && find . -type f ! -path './DEBIAN/*' -printf '%P\0' \
+            | LC_ALL=C sort -z \
+            | xargs -0 md5sum > DEBIAN/md5sums)
+          chmod 644 "$tmp/DEBIAN/md5sums"
+          dpkg-deb --root-owner-group -b "$tmp" "$deb"
+          rm -rf "$tmp"
+
+      - name: Run lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lintian
+          lintian --display-experimental --info --display-info --pedantic \
+                  --tag-display-limit 0 --color auto target/debian/*.deb
 
       - name: Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda

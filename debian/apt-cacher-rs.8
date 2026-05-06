@@ -1,0 +1,78 @@
+.TH APT\-CACHER\-RS 8 "May 2026" "apt-cacher-rs" "System Administration"
+.SH NAME
+apt\-cacher\-rs \- caching proxy for Debian style package repositories
+.SH SYNOPSIS
+.B apt\-cacher\-rs
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B apt\-cacher\-rs
+is a caching HTTP proxy for APT-style package repositories, written in
+Rust. It sits between APT clients and upstream Debian or Ubuntu mirrors,
+transparently storing downloaded packages, indexes and metadata so that
+subsequent requests are served from the local cache without re-fetching
+them over the network.
+
+It is intended as a smaller, faster and memory-safe alternative to
+apt-cacher-ng for hosts that need to share package downloads across
+multiple machines.
+.SH OPTIONS
+.TP
+.BI \-c\  PATH ", " \-\-config\-file= PATH
+Configuration file path
+.RI ( default :
+.IR /etc/apt\-cacher\-rs/apt\-cacher\-rs.conf ).
+.TP
+.BI \-\-cache\-path= PATH
+Cache directory path; overrides
+.I cache_directory
+from the configuration file.
+.TP
+.BI \-\-database\-path= PATH
+Database file path; overrides
+.I database_path
+from the configuration file.
+.TP
+.BI \-\-log\-file= PATH
+Log file path. Logs are written to the given file instead of the
+console (the default).
+.TP
+.BI \-l\  SEVERITY ", " \-\-log\-level= SEVERITY
+Logging level (e.g. \fItrace\fR, \fIdebug\fR, \fIinfo\fR, \fIwarn\fR,
+\fIerror\fR).
+.TP
+.B \-\-skip\-log\-timestamp
+Do not include a timestamp in log messages. Useful when the service
+manager (such as systemd) already adds one.
+.TP
+.B \-\-permit\-running\-daemon\-as\-root
+Permit the daemon to run as the root user. This is potentially
+dangerous and is not recommended.
+.TP
+.B \-h ", " \-\-help
+Print a help summary and exit.
+.TP
+.B \-V ", " \-\-version
+Print version information and exit.
+.SH FILES
+.TP
+.I /etc/apt\-cacher\-rs/apt\-cacher\-rs.conf
+Default configuration file.
+.TP
+.I /var/cache/apt\-cacher\-rs/
+Default cache directory.
+.TP
+.I /var/lib/apt\-cacher\-rs/apt\-cacher\-rs.db
+Default database file.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reopen the log file (when logging to a file).
+.SH SEE ALSO
+.BR apt (8),
+.BR systemd.service (5).
+.PP
+Project homepage:
+.UR https://github.com/cgzones/apt\-cacher\-rs
+.UE
+.SH AUTHOR
+Christian Göttsche <cgzones@googlemail.com>.
