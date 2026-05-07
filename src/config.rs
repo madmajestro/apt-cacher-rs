@@ -139,7 +139,10 @@ impl DomainName {
             return Ok(Self::Ipv4(addr.to_string(), addr));
         }
 
-        if is_valid_domain(&domain) {
+        // At this point we've already proven there's no `:` and the string
+        // is not a valid IPv4 address, so skip those branches in the
+        // validator.
+        if is_valid_dns_label_string(&domain) {
             Ok(Self::Dns(domain))
         } else {
             Err(domain)
@@ -887,37 +890,48 @@ fn intersect<T: Ord>(a: &[T], b: &[T]) -> bool {
     }
 }
 
+/// DNS-only label-string validator: caller has already excluded any
+/// IPv6/colon form.  All input bytes are required to be ASCII alphanumeric
+/// or hyphen; labels must be 1-63 bytes and must not start or end with `-`.
 #[must_use]
-pub(crate) fn is_valid_domain(domain: &str) -> bool {
+fn is_valid_dns_label_string(domain: &str) -> bool {
     /* No unicode characters allowed for now */
 
-    let len = domain.len();
+    let bytes = domain.as_bytes();
+    let len = bytes.len();
     if len == 0 || len > 253 {
         return false;
     }
 
-    // IPv6 addresses contain colons
-    if domain.contains(':') {
-        return domain.parse::<std::net::Ipv6Addr>().is_ok();
-    }
-
-    for part in domain.split('.') {
-        if part.is_empty() || part.len() > 63 {
+    for part in bytes.split(|&b| b == b'.') {
+        let plen = part.len();
+        if plen == 0 || plen > 63 {
             return false;
         }
-
-        for (pos, char) in part.chars().enumerate() {
-            if char == '-' {
-                if pos == 0 || pos == part.len() - 1 {
-                    return false;
-                }
-            } else if !char.is_ascii_alphanumeric() {
+        // RFC 1035: a label must not start or end with a hyphen.  Hoisted
+        // out of the inner loop so the per-byte branch is just the
+        // alphanumeric-or-hyphen check.
+        if part[0] == b'-' || part[plen - 1] == b'-' {
+            return false;
+        }
+        for &b in part {
+            if b != b'-' && !b.is_ascii_alphanumeric() {
                 return false;
             }
         }
     }
 
     true
+}
+
+#[must_use]
+pub(crate) fn is_valid_domain(domain: &str) -> bool {
+    // IPv6 addresses contain colons; everything else goes through the
+    // DNS-label fast path.
+    if domain.contains(':') {
+        return domain.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    is_valid_dns_label_string(domain)
 }
 
 #[must_use]
@@ -949,12 +963,12 @@ pub(crate) fn is_valid_config_domain(domain: &str) -> bool {
             continue;
         }
 
-        for (pos, char) in part.chars().enumerate() {
-            if char == '-' {
+        for (pos, byte) in part.bytes().enumerate() {
+            if byte == b'-' {
                 if pos == 0 || pos == part.len() - 1 {
                     return false;
                 }
-            } else if !char.is_ascii_alphanumeric() {
+            } else if !byte.is_ascii_alphanumeric() {
                 return false;
             }
         }

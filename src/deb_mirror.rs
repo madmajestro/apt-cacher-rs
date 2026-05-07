@@ -406,7 +406,7 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
                 component,
                 filename,
             });
-        } else if filename.len() >= 64 && filename.chars().all(|c| c.is_ascii_hexdigit()) {
+        } else if filename.len() >= 64 && filename.bytes().all(|b| b.is_ascii_hexdigit()) {
             let hash_algorithm = parts.next()?;
 
             // The filename length >= 64 characters ensures that only SHA >= SHA256 is supported
@@ -434,12 +434,12 @@ pub(crate) fn parse_request_path(path: &str) -> Option<ResourceFile<'_>> {
 pub(crate) fn valid_filename(name: &str) -> bool {
     name.len() >= 4
         && name.len() <= 255
-        && name.chars().enumerate().all(|(i, c)| {
-            (i > 0 || c.is_ascii_alphanumeric())
-                && c.is_ascii()
-                && !c.is_ascii_control()
-                && c != std::path::MAIN_SEPARATOR
-                && c != '/'
+        && name.bytes().enumerate().all(|(i, b)| {
+            (i > 0 || b.is_ascii_alphanumeric())
+                && b.is_ascii()
+                && !b.is_ascii_control()
+                && b != std::path::MAIN_SEPARATOR as u8
+                && b != b'/'
         })
 }
 
@@ -524,8 +524,8 @@ pub(crate) fn valid_mirrorname(name: &str) -> bool {
 fn valid_path_segment(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
-        && name.chars().enumerate().all(|(i, c)| {
-            c.is_ascii_alphanumeric() || (i > 0 && (c == '-' || c == '.' || c == '_'))
+        && name.bytes().enumerate().all(|(i, b)| {
+            b.is_ascii_alphanumeric() || (i > 0 && (b == b'-' || b == b'.' || b == b'_'))
         })
 }
 
