@@ -232,51 +232,51 @@ pub(crate) async fn write_response_headers(
 /// response-body bytes).
 pub(crate) async fn write_all_to_stream(
     stream: &TcpStream,
-    data: &[u8],
+    mut data: &[u8],
     phase: WritePhase,
 ) -> std::io::Result<()> {
-    async fn inner(stream: &TcpStream, mut data: &[u8]) -> std::io::Result<()> {
-        while !data.is_empty() {
-            stream.writable().await?;
+    let deadline = tokio::time::sleep(global_config().http_timeout);
+    tokio::pin!(deadline);
 
-            let _: Never = match stream.try_write(data) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        ErrorKind::WriteZero,
-                        "failed to write to TCP stream",
-                    ));
-                }
-                Ok(n) => {
-                    data = &data[n..];
-                    continue;
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    continue;
-                }
-                Err(err) if err.kind() == ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(err) => return Err(err),
-            };
-        }
-
-        Ok(())
-    }
-
-    match tokio::time::timeout(global_config().http_timeout, inner(stream, data)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(err),
-        Err(_timeout @ tokio::time::error::Elapsed { .. }) => {
-            match phase {
-                WritePhase::Header => metrics::HTTP_TIMEOUT_CLIENT_HEADER_WRITE.increment(),
-                WritePhase::Body => metrics::HTTP_TIMEOUT_CLIENT_BODY.increment(),
+    while !data.is_empty() {
+        tokio::select! {
+            biased;
+            ready = stream.writable() => {
+                ready?;
+                let _: Never = match stream.try_write(data) {
+                    Ok(0) => {
+                        return Err(std::io::Error::new(
+                            ErrorKind::WriteZero,
+                            "failed to write to TCP stream",
+                        ));
+                    }
+                    Ok(n) => {
+                        data = &data[n..];
+                        continue;
+                    }
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(err) if err.kind() == ErrorKind::Interrupted => {
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
             }
-            Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                "TCP stream write operation timed out",
-            ))
+            () = &mut deadline => {
+                match phase {
+                    WritePhase::Header => metrics::HTTP_TIMEOUT_CLIENT_HEADER_WRITE.increment(),
+                    WritePhase::Body => metrics::HTTP_TIMEOUT_CLIENT_BODY.increment(),
+                }
+                return Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    "TCP stream write operation timed out",
+                ));
+            }
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
