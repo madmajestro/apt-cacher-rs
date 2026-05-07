@@ -213,11 +213,11 @@ opt-level = 3
 [profile.profiling]
 inherits = "release"
 opt-level = 3
-debug = 1
+debug = 2
 strip = false
 debug-assertions = false
 overflow-checks = false
-lto = true
+lto = "thin"
 
 [package.metadata.deb]
 assets = [
