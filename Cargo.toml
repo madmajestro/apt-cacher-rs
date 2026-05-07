@@ -54,6 +54,7 @@ tokio-rustls = { version = "0.26", optional = true }
 scopeguard = "1.2.0"
 serde = "1.0.197"
 simplelog = "0.12.1"
+smallvec = { version = "1.15", features = ["const_generics", "union"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "macros",
     "migrate",

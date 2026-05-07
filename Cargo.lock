@@ -104,6 +104,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "simplelog",
+ "smallvec",
  "sqlx",
  "tempfile",
  "time",

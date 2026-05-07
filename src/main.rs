@@ -43,6 +43,7 @@ mod ringbuffer;
 mod secure_vec;
 #[cfg(feature = "sendfile")]
 mod sendfile_conn;
+mod small_vec_deque;
 #[cfg(feature = "splice")]
 mod splice_conn;
 mod task_cache_scan;

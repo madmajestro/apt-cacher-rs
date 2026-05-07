@@ -225,6 +225,13 @@ where
 /// two body shapes — the unified `Error` (`Box<RateCheckedBodyErr<B::Error>>`)
 /// matches the rated case so downstream error mapping is identical.
 #[pin_project(project = MaybeRatedProj)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "RateCheckedBody embeds an inline SumRingBuffer sized for the \
+              default rate_check_timeframe (30 entries) so rated requests \
+              skip the per-request heap allocation; boxing the variant \
+              would re-introduce exactly the alloc we're avoiding"
+)]
 pub(crate) enum MaybeRated<B>
 where
     B: Body,

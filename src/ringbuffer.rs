@@ -4,6 +4,8 @@ use std::{
     ops::{AddAssign, SubAssign},
 };
 
+use crate::{config::DEFAULT_RATE_CHECK_TIMEFRAME, small_vec_deque::SmallVecDeque, static_assert};
+
 #[derive(Debug)]
 pub(crate) struct RingBuffer<T> {
     inner: VecDeque<T>,
@@ -80,10 +82,15 @@ impl<T> RingBuffer<T> {
     }
 }
 
+const SUM_RING_INLINE: usize = 30;
+static_assert!(SUM_RING_INLINE == DEFAULT_RATE_CHECK_TIMEFRAME.get());
+
+/// Fixed-capacity ring buffer that also tracks a running sum of its
+/// contents.  Built on [`SmallVecDeque`] for the index-based ring
+/// storage (no per-push memmove, stack-resident at default capacity).
 #[derive(Debug)]
 pub(crate) struct SumRingBuffer<T> {
-    inner: VecDeque<T>,
-    capacity: NonZero<usize>,
+    inner: SmallVecDeque<T, SUM_RING_INLINE>,
     sum: T,
 }
 
@@ -94,52 +101,41 @@ where
     #[must_use]
     pub(crate) fn new(capacity: NonZero<usize>) -> Self {
         Self {
-            inner: VecDeque::with_capacity(capacity.get()),
-            capacity,
+            inner: SmallVecDeque::with_capacity(capacity),
             sum: T::default(),
         }
     }
 
+    /// Append `item`; if the buffer is full, the oldest entry is
+    /// evicted (and subtracted from the running sum) in O(1).
     pub(crate) fn push(&mut self, item: T) {
-        if self.is_full() {
-            let front = self.inner.pop_front().expect("VecDeque is full, not empty");
-            self.sum -= front;
+        if let Some(evicted) = self.inner.push_back(item) {
+            self.sum -= evicted;
         }
-
-        self.inner.push_back(item);
-
         self.sum += item;
-
-        debug_assert!(
-            self.inner.len() <= self.capacity.get(),
-            "ring buffer should not exceed capacity"
-        );
     }
 
+    /// Add `item` to the most recent entry, or push it as a new entry
+    /// when the buffer is empty.
     pub(crate) fn add_back(&mut self, item: T) {
-        if let Some(v) = self.inner.back_mut() {
-            *v += item;
-            self.sum += item;
+        if let Some(last) = self.inner.back_mut() {
+            *last += item;
         } else {
-            self.inner.push_back(item);
-
-            self.sum += item;
-
-            debug_assert!(
-                self.inner.len() <= self.capacity.get(),
-                "ring buffer should not exceed capacity"
-            );
+            // back_mut returned None ⇒ buffer is empty; push_back's
+            // eviction path can't fire here.
+            let _evicted: Option<T> = self.inner.push_back(item);
         }
+        self.sum += item;
     }
 
     #[must_use]
     pub(crate) fn is_full(&self) -> bool {
-        self.inner.len() == self.capacity.get()
+        self.inner.is_full()
     }
 
     #[must_use]
     pub(crate) const fn capacity(&self) -> NonZero<usize> {
-        self.capacity
+        self.inner.capacity()
     }
 
     #[must_use]
