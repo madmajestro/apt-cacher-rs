@@ -219,53 +219,51 @@ async fn read_request_headers(
     stream: &TcpStream,
     buf: &mut BytesMut,
 ) -> std::io::Result<Option<usize>> {
-    async fn inner(stream: &TcpStream, buf: &mut BytesMut) -> std::io::Result<Option<usize>> {
-        // Check if we already have the complete headers from the previous read
-        if let Some(next_index) = find_header_end(buf) {
-            return Ok(Some(next_index));
-        }
-
-        loop {
-            stream.readable().await?;
-
-            let _: Never = match stream.try_read_buf(buf) {
-                Ok(0) => return Ok(None),
-                Ok(n) => {
-                    // Check if we have the complete headers
-                    if let Some(next_index) = find_header_end(buf) {
-                        trace!("Read {n} bytes from client, found header end at {next_index}");
-                        return Ok(Some(next_index));
-                    }
-                    if buf.len() > MAX_HEADER_SIZE {
-                        return Err(std::io::Error::new(
-                            ErrorKind::InvalidInput,
-                            "request headers too large",
-                        ));
-                    }
-                    trace!("Read {n} bytes from client, did not find header end");
-                    continue;
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    tokio::task::yield_now().await;
-                    continue;
-                }
-                Err(err) if err.kind() == ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(err) => return Err(err),
-            };
-        }
+    // Check if we already have the complete headers from the previous read
+    if let Some(next_index) = find_header_end(buf) {
+        return Ok(Some(next_index));
     }
 
-    match tokio::time::timeout(global_config().http_timeout, inner(stream, buf)).await {
-        Ok(Ok(next_index)) => Ok(next_index),
-        Ok(Err(err)) => Err(err),
-        Err(_timeout @ tokio::time::error::Elapsed { .. }) => {
-            metrics::HTTP_TIMEOUT_CLIENT_HEADER.increment();
-            Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                "reading TCP stream request headers timed out",
-            ))
+    let deadline = tokio::time::sleep(global_config().http_timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            biased;
+            ready = stream.readable() => {
+                ready?;
+                match stream.try_read_buf(buf) {
+                    Ok(0) => return Ok(None),
+                    Ok(n) => {
+                        if let Some(next_index) = find_header_end(buf) {
+                            trace!("Read {n} bytes from client, found header end at {next_index}");
+                            return Ok(Some(next_index));
+                        }
+                        if buf.len() > MAX_HEADER_SIZE {
+                            return Err(std::io::Error::new(
+                                ErrorKind::InvalidInput,
+                                "request headers too large",
+                            ));
+                        }
+                        trace!("Read {n} bytes from client, did not find header end");
+                    }
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        // Race: readable() returned ready but try_read_buf got
+                        // WouldBlock.  Looping iterates select! which will
+                        // re-poll readable() and naturally pend if the socket
+                        // really isn't ready.
+                    }
+                    Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            () = &mut deadline => {
+                metrics::HTTP_TIMEOUT_CLIENT_HEADER.increment();
+                return Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    "reading TCP stream request headers timed out",
+                ));
+            }
         }
     }
 }

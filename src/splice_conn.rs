@@ -1674,46 +1674,49 @@ async fn read_upstream_response_headers(
     upstream: &mut UpstreamConn,
     buf: &mut BytesMut,
 ) -> std::io::Result<usize> {
-    async fn inner(upstream: &mut UpstreamConn, buf: &mut BytesMut) -> std::io::Result<usize> {
-        loop {
-            let n = upstream.read_buf(buf).await?;
-            if n == 0 {
-                return Err(std::io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "upstream closed before sending complete headers",
-                ));
-            }
+    let deadline = tokio::time::sleep(global_config().http_timeout);
+    tokio::pin!(deadline);
 
-            // Check if we have the complete headers
-            if let Some(end) = buf
-                .array_windows()
-                .position(|w| w == b"\r\n\r\n")
-                .map(|i| i + 4)
-            {
-                return Ok(end);
-            }
-            if buf.len() > MAX_RESPONSE_HEADER_SIZE {
-                warn_once_or_info!(
-                    "splice proxy: upstream response header size of {} bytes exceeds {} bytes",
-                    buf.len(),
-                    MAX_RESPONSE_HEADER_SIZE
-                );
+    loop {
+        let read_fut = upstream.read_buf(buf);
+        tokio::pin!(read_fut);
+        let n = tokio::select! {
+            biased;
+            r = &mut read_fut => r?,
+            () = &mut deadline => {
+                metrics::HTTP_TIMEOUT_UPSTREAM_READ.increment();
                 return Err(std::io::Error::new(
-                    ErrorKind::InvalidData,
-                    "upstream response headers too large",
+                    ErrorKind::TimedOut,
+                    "timed out reading upstream response headers",
                 ));
             }
+        };
+
+        if n == 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "upstream closed before sending complete headers",
+            ));
         }
-    }
 
-    match tokio::time::timeout(global_config().http_timeout, inner(upstream, buf)).await {
-        Ok(result) => result,
-        Err(_timeout @ tokio::time::error::Elapsed { .. }) => {
-            metrics::HTTP_TIMEOUT_UPSTREAM_READ.increment();
-            Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                "timed out reading upstream response headers",
-            ))
+        // Check if we have the complete headers
+        if let Some(end) = buf
+            .array_windows()
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+        {
+            return Ok(end);
+        }
+        if buf.len() > MAX_RESPONSE_HEADER_SIZE {
+            warn_once_or_info!(
+                "splice proxy: upstream response header size of {} bytes exceeds {} bytes",
+                buf.len(),
+                MAX_RESPONSE_HEADER_SIZE
+            );
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "upstream response headers too large",
+            ));
         }
     }
 }
