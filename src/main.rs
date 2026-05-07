@@ -177,6 +177,8 @@ use crate::http_range::HttpDate;
 use crate::http_range::format_http_date;
 use crate::humanfmt::HumanFmt;
 use crate::logstore::LogStore;
+use crate::permitted_host_cache::authorize_cache_access;
+use crate::permitted_host_cache::is_host_allowed_cached;
 use crate::rate_checked_body::RateCheckDirection;
 use crate::task_cache_scan::task_cache_scan;
 use crate::task_cleanup::{
@@ -2284,12 +2286,135 @@ enum CacheFileStat {
     New,
 }
 
-#[must_use]
-pub(crate) fn is_host_allowed(requested_host: &str) -> bool {
-    global_config()
-        .allowed_mirrors
-        .iter()
-        .any(|host| host.permits(requested_host))
+mod permitted_host_cache {
+    use hashbrown::HashMap;
+    use http::StatusCode;
+
+    use crate::{ClientInfo, config::DomainName, global_config, metrics, warn_once_or_info};
+
+    #[must_use]
+    fn is_host_allowed(requested_host: &str) -> bool {
+        global_config()
+            .allowed_mirrors
+            .iter()
+            .any(|host| host.permits(requested_host))
+    }
+
+    /// Soft cap on the [`PermittedHostCache`] entry count.  Realistic apt
+    /// traffic uses a handful of mirrors so this almost never trips; the
+    /// cap exists purely to bound memory under attacker-driven random
+    /// `Host:` spam.
+    const PERMITTED_HOST_CACHE_MAX_ENTRIES: usize = 256;
+
+    /// Reason a `Host:` header was rejected by [`authorize_cache_access`];
+    /// cached so repeat-spam of the same bad host doesn't re-validate or
+    /// re-scan `allowed_mirrors`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum HostReject {
+        /// Failed `DomainName::new` — malformed `Host:` header.
+        Unsupported,
+        /// Validated, but not permitted by `allowed_mirrors`.
+        Forbidden,
+    }
+
+    /// Caches the full validation + allow-list check result per raw `Host:`
+    /// string.  On hit, [`authorize_cache_access`] returns a cloned
+    /// `DomainName` without re-running `DomainName::new` or scanning
+    /// `allowed_mirrors`.
+    #[derive(Default)]
+    struct PermittedHostCache {
+        entries: parking_lot::RwLock<HashMap<Box<str>, Result<DomainName, HostReject>>>,
+    }
+
+    impl PermittedHostCache {
+        fn lookup(&self, host: &str) -> Option<Result<DomainName, HostReject>> {
+            self.entries.read().get(host).cloned()
+        }
+
+        fn insert(&self, host: Box<str>, result: Result<DomainName, HostReject>) {
+            let mut map = self.entries.write();
+            if map.len() >= PERMITTED_HOST_CACHE_MAX_ENTRIES && !map.contains_key(host.as_ref()) {
+                // Best-effort cap — clear and start over rather than implement
+                // proper LRU.  Realistic workloads never hit this; under attack
+                // the worst case is "we re-validate everything every N entries"
+                // which still beats per-request validation.
+                map.clear();
+            }
+            map.insert(host, result);
+        }
+    }
+
+    static PERMITTED_HOST_CACHE: std::sync::LazyLock<PermittedHostCache> =
+        std::sync::LazyLock::new(PermittedHostCache::default);
+
+    /// Cache-aware companion to [`is_host_allowed`] for the moved-host /
+    /// redirect-destination call sites.  On a hit, returns the cached
+    /// allow/deny result without re-scanning `allowed_mirrors`.  On a
+    /// miss, falls through to the uncached scan (these call sites don't
+    /// have a `DomainName` to store, so we don't populate the cache here
+    /// — only [`authorize_cache_access`] does).
+    #[must_use]
+    pub(crate) fn is_host_allowed_cached(requested_host: &str) -> bool {
+        if let Some(cached) = PERMITTED_HOST_CACHE.lookup(requested_host) {
+            return cached.is_ok();
+        }
+        is_host_allowed(requested_host)
+    }
+
+    pub(crate) fn authorize_cache_access(
+        client: &ClientInfo,
+        requested_host: &str,
+    ) -> Result<DomainName, (http::StatusCode, &'static str)> {
+        let config = global_config();
+
+        let allowed_proxy_clients = config.allowed_proxy_clients.as_slice();
+        let client_ip = client.ip();
+        if !allowed_proxy_clients.is_empty()
+            && !allowed_proxy_clients
+                .iter()
+                .any(|ac| ac.contains(&client_ip))
+        {
+            warn_once_or_info!("Unauthorized proxy client {client}");
+            metrics::AUTHZ_REJECTED_CLIENT.increment();
+            return Err((StatusCode::FORBIDDEN, "Unauthorized client"));
+        }
+
+        // Hot path: cache hit returns a cloned DomainName without
+        // re-validating or rescanning allowed_mirrors.
+        if let Some(cached) = PERMITTED_HOST_CACHE.lookup(requested_host) {
+            return finalize_host_result(cached, requested_host);
+        }
+
+        // Miss: validate the host and check allowed_mirrors, then cache
+        // whatever the outcome was (success, malformed, or not-allowed).
+        // `DomainName::new` consumes its argument, so we hand it an owned
+        // copy and reuse the original `&str` for the cache key.
+        let result = match DomainName::new(requested_host.to_owned()) {
+            Ok(d) if is_host_allowed(&d) => Ok(d),
+            Ok(_) => Err(HostReject::Forbidden),
+            Err(_) => Err(HostReject::Unsupported),
+        };
+        PERMITTED_HOST_CACHE.insert(requested_host.into(), result.clone());
+        finalize_host_result(result, requested_host)
+    }
+
+    fn finalize_host_result(
+        result: Result<DomainName, HostReject>,
+        raw_host: &str,
+    ) -> Result<DomainName, (http::StatusCode, &'static str)> {
+        match result {
+            Ok(d) => Ok(d),
+            Err(HostReject::Unsupported) => {
+                warn_once_or_info!("Unsupported host `{}`", raw_host.escape_debug());
+                Err((StatusCode::BAD_REQUEST, "Unsupported host"))
+            }
+            Err(HostReject::Forbidden) => {
+                warn_once_or_info!("Unauthorized host {raw_host}");
+                metrics::AUTHZ_REJECTED_MIRROR.increment();
+                Err((StatusCode::FORBIDDEN, "Unauthorized host"))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2619,7 +2744,7 @@ async fn serve_new_file(
         if moved_uri.scheme().is_some_and(|scheme| {
             *scheme == http::uri::Scheme::HTTP || *scheme == http::uri::Scheme::HTTPS
         }) && let Some(moved_host) = moved_uri.host()
-            && is_host_allowed(moved_host)
+            && is_host_allowed_cached(moved_host)
         {
             req_uri = std::borrow::Cow::Owned(moved_uri);
 
@@ -3458,41 +3583,6 @@ fn connect_response(
     response
 }
 
-pub(crate) fn authorize_cache_access(
-    client: &ClientInfo,
-    requested_host: String,
-) -> Result<DomainName, (http::StatusCode, &'static str)> {
-    let config = global_config();
-
-    let allowed_proxy_clients = config.allowed_proxy_clients.as_slice();
-    let client_ip = client.ip();
-    if !allowed_proxy_clients.is_empty()
-        && !allowed_proxy_clients
-            .iter()
-            .any(|ac| ac.contains(&client_ip))
-    {
-        warn_once_or_info!("Unauthorized proxy client {client}");
-        metrics::AUTHZ_REJECTED_CLIENT.increment();
-        return Err((StatusCode::FORBIDDEN, "Unauthorized client"));
-    }
-
-    let requested_host = match DomainName::new(requested_host) {
-        Ok(d) => d,
-        Err(rh) => {
-            warn_once_or_info!("Unsupported host `{}`", rh.escape_debug());
-            return Err((StatusCode::BAD_REQUEST, "Unsupported host"));
-        }
-    };
-
-    if !is_host_allowed(&requested_host) {
-        warn_once_or_info!("Unauthorized host {requested_host}");
-        metrics::AUTHZ_REJECTED_MIRROR.increment();
-        return Err((StatusCode::FORBIDDEN, "Unauthorized host"));
-    }
-
-    Ok(requested_host)
-}
-
 #[inline]
 async fn pre_process_client_request_wrapper(
     client: ClientInfo,
@@ -3582,7 +3672,7 @@ async fn pre_process_client_request(
         None => None,
     };
 
-    let requested_host = match authorize_cache_access(&client, requested_host) {
+    let requested_host = match authorize_cache_access(&client, &requested_host) {
         Ok(rh) => rh,
         Err((status, msg)) => return quick_response(status, msg),
     };
@@ -3916,7 +4006,7 @@ async fn pre_process_client_request(
 
         if moved_uri.scheme().is_some_and(|scheme| {
             *scheme == http::uri::Scheme::HTTP || *scheme == http::uri::Scheme::HTTPS
-        }) && moved_uri.host().is_some_and(is_host_allowed)
+        }) && moved_uri.host().is_some_and(is_host_allowed_cached)
         {
             parts_cloned.uri = moved_uri;
             let redirected_request = Request::from_parts(parts_cloned, Empty::new());

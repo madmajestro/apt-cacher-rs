@@ -570,7 +570,7 @@ async fn try_sendfile_request(
         return serve_webui(stream, &uri, appstate, &client, *conn_version, conn_action).await;
     };
 
-    let requested_host = match authorize_cache_access(&client, authority.host().to_string()) {
+    let requested_host = match authorize_cache_access(&client, authority.host()) {
         Ok(rh) => rh,
         Err((status, msg)) => return SendfileResult::Invalid { status, msg },
     };

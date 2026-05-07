@@ -64,8 +64,8 @@ use crate::{
     APP_USER_AGENT, APP_VIA, ActiveDownloadStatus, AppState, CachedFlavor, ConnectionDetails,
     ContentLength, Never, OriginateOutcome, SCHEME_CACHE, Scheme, SchemeKey, SchemeKeyRef,
     VOLATILE_UNKNOWN_CONTENT_LENGTH_UPPER, client_counter, content_type_for_cached_file,
-    global_cache_quota, global_config, is_host_allowed, metrics, static_assert, warn_once_or_debug,
-    warn_once_or_info,
+    global_cache_quota, global_config, is_host_allowed_cached, metrics, static_assert,
+    warn_once_or_debug, warn_once_or_info,
 };
 #[cfg(feature = "ktls")]
 use crate::{KTLS_BLOCKED, warn_once};
@@ -3038,7 +3038,7 @@ async fn follow_redirect(
     let Some(moved_host) = moved_uri.host() else {
         return Ok(None);
     };
-    if !is_host_allowed(moved_host) {
+    if !is_host_allowed_cached(moved_host) {
         debug!(
             "splice proxy: 301 redirect host `{moved_host}` not in allowed_mirrors, not following"
         );
