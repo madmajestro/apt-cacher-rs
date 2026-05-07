@@ -1267,7 +1267,7 @@ async fn serve_cached_file(
             }
         };
 
-        info!(
+        debug!(
             "Serving cached file {} from mirror {}{} for client {} via mmap...",
             conn_details.debname, conn_details.mirror, aliased, conn_details.client
         );
@@ -1296,7 +1296,7 @@ async fn serve_cached_file(
     // readahead window accordingly.
     hint_sequential_read(&file, &file_path);
 
-    info!(
+    debug!(
         "Serving cached file {} from mirror {}{} for client {} via stream...",
         conn_details.debname, conn_details.mirror, aliased, conn_details.client
     );
@@ -4468,7 +4468,7 @@ async fn main_loop(
             continue;
         };
 
-        info!("New client connection from {client}");
+        debug!("New client connection from {client}");
         let client_start = Instant::now();
 
         let appstate = appstate.clone();
@@ -4479,7 +4479,7 @@ async fn main_loop(
             #[cfg(not(feature = "sendfile"))]
             handle_hyper_connection(stream, client, appstate).await;
 
-            info!(
+            debug!(
                 "Closed connection to client {client} after {}",
                 HumanFmt::Time(client_start.elapsed().into())
             );

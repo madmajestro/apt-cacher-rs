@@ -1245,7 +1245,7 @@ pub(crate) async fn serve_file_via_sendfile(
             Err(result) => return result,
         };
 
-    info!(
+    debug!(
         "Serving cached file {} from mirror {}{aliased} for client {} via sendfile...",
         conn_details.debname, conn_details.mirror, conn_details.client,
     );

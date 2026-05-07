@@ -4507,7 +4507,7 @@ async fn splice_proxy_drive(
         #[expect(clippy::cast_precision_loss, reason = "only for display purpose")]
         let resume_percent = resume_offset as f32 / total_content_length.get() as f32 * 100.0;
 
-        info!(
+        debug!(
             "Splice proxy{tls_label}: resuming and serving {} from mirror {} for client {} at byte {} ({}%)...",
             conn_details.debname,
             conn_details.mirror,
@@ -4516,7 +4516,7 @@ async fn splice_proxy_drive(
             resume_percent
         );
     } else {
-        info!(
+        debug!(
             "Splice proxy{tls_label}: downloading and serving {} from mirror {} for client {}...",
             conn_details.debname, conn_details.mirror, conn_details.client
         );
@@ -5234,7 +5234,7 @@ async fn handle_volatile_buffered_download(
         return Ok(());
     };
 
-    info!(
+    debug!(
         "Splice proxy{tls_label}: buffered volatile download of {} from mirror {} for client {} ({} bytes)...",
         conn_details.debname, conn_details.mirror, conn_details.client, total_content_length
     );
