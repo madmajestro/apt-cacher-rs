@@ -589,11 +589,12 @@ async fn cleanup_mirror_deb_files(
             continue;
         }
 
-        // Drop the post-flight ETag/Last-Modified entry for the removed
-        // file so a subsequent re-cache starts from a clean state instead
-        // of reusing the stale entry until the next rename.  Treat a
-        // non-UTF-8 filename as opaque (debnames are URL-decoded ASCII in
-        // practice; an OsString that doesn't decode is not in the map).
+        // Drop the post-flight ETag/Last-Modified entry so a re-cache
+        // starts clean.  A concurrent re-download finishing between
+        // `remove_file` and `invalidate` loses its fresh `set()`; the
+        // next request re-populates from xattr.  Non-UTF-8 filenames
+        // are opaque (debnames are URL-decoded ASCII; mismatches aren't
+        // in the map).
         if let Some(debname) = path.file_name().and_then(|n| n.to_str()) {
             cache_metadata::store()
                 .invalidate(&cache_metadata::CacheMetadataKeyRef::new(&mirror, debname));

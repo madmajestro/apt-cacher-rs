@@ -297,12 +297,13 @@ impl RenameBarrier {
     /// to the post-flight [`cache_metadata`] cache, and clear the
     /// active-downloads entry.
     ///
-    /// Ordering matters: the cache is populated **before** the entry is
-    /// removed so that workers which miss the active-downloads entry
-    /// always find the cache primed with the rename's values.  Conversely,
-    /// workers that still see the entry observe `Finished { meta = Some
-    /// (...) }` and read the values directly from status.  Either way they
-    /// agree with the on-disk file produced by the just-completed rename.
+    /// Ordering matters: the cache is populated **before** the entry
+    /// is removed, so workers that miss the entry always find it
+    /// primed.  Workers that still see the entry observe `Finished
+    /// { meta: Some(_) }` and read from status.  The non-`Download`
+    /// fallback below is a logic-bug path: logs, sets `meta: None`,
+    /// skips the cache publish; observers fall through to
+    /// `cache_metadata::resolve` like `InitBarrier::finished`.
     pub(crate) fn release(mut self, path: PathBuf, bytes_received: u64) {
         let mut data = self.data.take().expect("every sink consumes the instance");
 
