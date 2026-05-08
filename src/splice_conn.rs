@@ -2924,7 +2924,7 @@ async fn send_and_read_headers(
     let resp = parse_upstream_response(&hdr_buf, hdr_end)?;
     // Credit body bytes that arrived bundled with the response headers
     // in the same read (the body_prefix). Done after parse so an
-    // unparseable response is not credited as a successful download —
+    // unparsable response is not credited as a successful download —
     // mirrors `record_upstream_status` below. Subsequent reads of
     // remaining body bytes credit themselves separately.
     let body_prefix_len = (hdr_buf.len() - hdr_end) as u64;
