@@ -1805,7 +1805,7 @@ async fn serve_unfinished_sendfile(
                     drop(st);
                     break r;
                 }
-                ActiveDownloadStatus::Finished { path, meta, .. } => {
+                ActiveDownloadStatus::Finished { path, meta } => {
                     let finished_path = path.clone();
                     let prefetched = meta.clone();
                     drop(st);

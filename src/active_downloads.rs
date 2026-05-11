@@ -45,7 +45,17 @@ struct ActiveDownloadKeyRef<'a> {
 
 impl Equivalent<ActiveDownloadKey> for ActiveDownloadKeyRef<'_> {
     fn equivalent(&self, key: &ActiveDownloadKey) -> bool {
-        self.mirror == &key.mirror && self.debname == key.debname && self.layout == key.layout
+        let &Self {
+            mirror,
+            debname,
+            layout,
+        } = self;
+        let ActiveDownloadKey {
+            mirror: kmirror,
+            debname: kdebname,
+            layout: klayout,
+        } = key;
+        mirror == kmirror && debname == kdebname && layout == *klayout
     }
 }
 
@@ -378,7 +388,13 @@ impl ActiveDownloads {
 
             for entry in self.inner.read().values() {
                 let d = entry.status.blocking_read();
-                if let ActiveDownloadStatus::Download { content_length, .. } = &*d {
+                if let ActiveDownloadStatus::Download {
+                    path: _,
+                    content_length,
+                    rx: _,
+                    meta: _,
+                } = &*d
+                {
                     sum += content_length.upper().get();
                 }
             }

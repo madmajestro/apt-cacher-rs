@@ -331,7 +331,12 @@ impl RenameBarrier {
         // with the status / cache transitions so the active-downloads
         // entry doesn't leak.
         let meta_for_status: Option<Arc<UpstreamMetadata>> = match &*data.lock {
-            ActiveDownloadStatus::Download { meta, .. } => Some(Arc::clone(meta)),
+            ActiveDownloadStatus::Download {
+                path: _,
+                content_length: _,
+                rx: _,
+                meta,
+            } => Some(Arc::clone(meta)),
             ActiveDownloadStatus::Init(_)
             | ActiveDownloadStatus::Finished { .. }
             | ActiveDownloadStatus::Aborted(_) => {

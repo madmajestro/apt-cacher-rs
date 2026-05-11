@@ -308,7 +308,12 @@ pub(crate) struct SchemeKeyRef<'a> {
 
 impl Equivalent<SchemeKey> for SchemeKeyRef<'_> {
     fn equivalent(&self, key: &SchemeKey) -> bool {
-        self.host == key.host && self.port == key.port
+        let &Self { host, port } = self;
+        let SchemeKey {
+            host: khost,
+            port: kport,
+        } = key;
+        host == khost && port == *kport
     }
 }
 
@@ -2188,7 +2193,7 @@ async fn serve_downloading_file(
                 let _ignore = init_rx.changed().await;
                 init_waited = true;
             }
-            ActiveDownloadStatus::Finished { path, meta, .. } => {
+            ActiveDownloadStatus::Finished { path, meta } => {
                 let path_clone = path.clone();
                 let prefetched_upstream_metadata = if let Some(meta) = prefetched_upstream_metadata
                 {

@@ -54,14 +54,24 @@ impl MirrorEntry {
 
     #[must_use]
     pub(crate) fn cache_path(&self) -> PathBuf {
-        mirror_cache_path_impl(&self.host, self.port(), &self.path)
+        let Self {
+            host,
+            port: _,
+            path,
+        } = self;
+        mirror_cache_path_impl(host, self.port(), path)
     }
 }
 
 impl std::convert::From<MirrorEntry> for deb_mirror::Mirror {
     fn from(entry: MirrorEntry) -> Self {
         let port = entry.port();
-        Self::new(entry.host, port, entry.path)
+        let MirrorEntry {
+            host,
+            port: _,
+            path,
+        } = entry;
+        Self::new(host, port, path)
     }
 }
 

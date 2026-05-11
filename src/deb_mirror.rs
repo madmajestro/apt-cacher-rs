@@ -76,9 +76,15 @@ impl Eq for Mirror {}
 
 impl std::hash::Hash for Mirror {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.host.hash(state);
-        self.port.hash(state);
-        self.path.hash(state);
+        let Self {
+            host,
+            port,
+            path,
+            cached_authority: _,
+        } = self;
+        host.hash(state);
+        port.hash(state);
+        path.hash(state);
     }
 }
 

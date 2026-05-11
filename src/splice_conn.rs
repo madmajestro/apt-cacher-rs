@@ -271,7 +271,13 @@ struct PoolKeyRef<'a>(&'a str, u16, bool);
 impl hashbrown::Equivalent<PoolKey> for PoolKeyRef<'_> {
     #[inline]
     fn equivalent(&self, key: &PoolKey) -> bool {
-        self.0 == key.0 && self.1 == key.1 && self.2 == key.2
+        let Self {
+            0: host,
+            1: port,
+            2: is_tls,
+        } = self;
+        let (khost, kport, kis_tls) = key;
+        host == khost && port == kport && is_tls == kis_tls
     }
 }
 

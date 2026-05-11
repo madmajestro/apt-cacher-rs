@@ -180,7 +180,17 @@ impl<'a> CacheMetadataKeyRef<'a> {
 
 impl Equivalent<CacheMetadataKey> for CacheMetadataKeyRef<'_> {
     fn equivalent(&self, key: &CacheMetadataKey) -> bool {
-        self.mirror == &key.mirror && self.debname == key.debname && self.layout == key.layout
+        let &Self {
+            mirror,
+            debname,
+            layout,
+        } = self;
+        let CacheMetadataKey {
+            mirror: kmirror,
+            debname: kdebname,
+            layout: klayout,
+        } = key;
+        mirror == kmirror && debname == kdebname && layout == *klayout
     }
 }
 
