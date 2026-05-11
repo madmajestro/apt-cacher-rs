@@ -57,16 +57,34 @@ impl Mirror {
 
 impl PartialEq for Mirror {
     fn eq(&self, other: &Self) -> bool {
-        self.host == other.host && self.port == other.port && self.path == other.path
+        let Self {
+            host,
+            port,
+            path,
+            cached_authority: _,
+        } = self;
+        let Self {
+            host: ohost,
+            port: oport,
+            path: opath,
+            cached_authority: _,
+        } = other;
+        host == ohost && port == oport && path == opath
     }
 }
 
 impl Clone for Mirror {
     fn clone(&self) -> Self {
+        let Self {
+            host,
+            port,
+            path,
+            cached_authority: _,
+        } = self;
         Self {
-            host: self.host.clone(),
-            port: self.port,
-            path: self.path.clone(),
+            host: host.clone(),
+            port: *port,
+            path: path.clone(),
             cached_authority: OnceLock::new(),
         }
     }
