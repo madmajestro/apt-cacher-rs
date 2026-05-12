@@ -59,9 +59,9 @@ pub(crate) fn find_header_end(buf: &[u8]) -> Option<usize> {
 #[must_use]
 pub(crate) fn find_header<'a>(
     headers: &[httparse::Header<'a>],
-    header: &HeaderName,
+    header: &'static HeaderName,
 ) -> Option<&'a str> {
-    let name = header.as_str();
+    let name: &'static str = header.as_str();
 
     headers
         .iter()
