@@ -1941,10 +1941,10 @@ mod test {
         let client = ch("example.test");
         let cache = CacheHost::from(dn("example.test"));
         let other = CacheHost::from(dn("other.test"));
-        assert!(*client == *cache);
-        assert!(*cache == *client);
-        assert!(*client != *other);
-        assert!(*other != *client);
+        assert_eq!(*client, *cache);
+        assert_eq!(*cache, *client);
+        assert_ne!(*client, *other);
+        assert_ne!(*other, *client);
     }
 
     #[test]
