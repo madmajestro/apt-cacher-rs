@@ -40,7 +40,7 @@ curl -i -L --http1.1 -H "user-agent: apt-cacher-rs/0.1.0" -H "host: apt.llvm.org
    8.  run `codespell -L crate src/ debian/ deny.toml apt-cacher-rs.init README.md TODO`
    9.  run `cargo clippy`
   10.  run `cargo +nightly clippy`
-  11.  update version in *Cargo.toml* and run `cargo check` (to update *Cargo.lock*)
+  11.  update version in *Cargo.toml* and *debian/changelog*, then run `cargo check` (to update *Cargo.lock*)
   12.  create release commit with changed version number in *Cargo.toml* and *Cargo.lock*
   13.  run `cargo publish --dry-run`
   14.  run `cargo publish`
