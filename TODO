@@ -21,8 +21,6 @@
 * add option to limit archs (default: Dpkg::Arch::get_valid_arches())
 * cache package list files and prefetch them every 30min?
 * add option to import packages locally
-* add throttling based on server loadavg?
-* use std::hint::likely once stable (https://github.com/rust-lang/rust/issues/151619)
 
 # Utils
 
@@ -46,7 +44,7 @@ curl -i -L --http1.1 -H "user-agent: apt-cacher-rs/0.1.0" -H "host: apt.llvm.org
   12.  create release commit with changed version number in *Cargo.toml* and *Cargo.lock*
   13.  run `cargo publish --dry-run`
   14.  run `cargo publish`
-  15.  create git tag: `git tag -a -s -m "apt-cacher-rs release 0.0.0" v0.0.0`
+  15.  create git tag: `git tag -a -s -m "apt-cacher-rs Release 0.0.0" v0.0.0`
   16.  push git tag: `git push origin v0.0.0`
   17.  wait for *Generate Debian Package* workflow to succeed and generate Release Draft
   18.  publish the draft Release on GitHub
