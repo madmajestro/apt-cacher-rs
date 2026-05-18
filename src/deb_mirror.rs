@@ -757,7 +757,7 @@ pub(crate) fn is_translation_filename(name: &str) -> bool {
     }
     match rest.rsplit_once('.') {
         None => true,
-        Some((_, ext)) => matches!(ext, "gz" | "xz" | "bz2"),
+        Some((lang, ext)) => !lang.is_empty() && matches!(ext, "gz" | "xz" | "bz2"),
     }
 }
 
@@ -1841,6 +1841,7 @@ mod tests {
     #[test]
     fn is_translation_filename_rejects_bogus_inputs() {
         assert!(!is_translation_filename("Translation-"));
+        assert!(!is_translation_filename("Translation-.gz")); // empty lang with ext
         assert!(!is_translation_filename("translation-en.gz")); // wrong case
         assert!(!is_translation_filename("Translation"));
         assert!(!is_translation_filename("Translation-en.zst")); // unknown ext
