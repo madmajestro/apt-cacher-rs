@@ -257,6 +257,13 @@ pub(crate) fn content_type_for_cached_file(filename: &str) -> &'static str {
         return "application/vnd.debian.binary-package";
     }
 
+    // Match on the basename so both flat (`Packages`) and structured
+    // (`sid_main_binary-amd64_Packages`) debnames classify correctly.
+    let basename = filename.rsplit_once('_').map_or(filename, |(_, b)| b);
+    if matches!(basename, "InRelease" | "Release" | "Packages" | "Sources") {
+        return "text/plain";
+    }
+
     let extension = filename.rsplit_once('.').map(|(_, ext)| ext);
 
     match extension {
@@ -265,6 +272,7 @@ pub(crate) fn content_type_for_cached_file(filename: &str) -> &'static str {
         Some("bz2") => "application/x-bzip2",
         Some("lz4") => "application/x-lz4",
         Some("zst") => "application/zstd",
+        Some("gpg") => "application/pgp-signature",
         _ => "application/octet-stream",
     }
 }
@@ -5247,4 +5255,68 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     runtime.block_on(async { main_loop(https_client).await })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_type_for_cached_file;
+
+    #[test]
+    fn content_type_for_text_manifests() {
+        // Flat-repo debnames (no distribution prefix).
+        assert_eq!(content_type_for_cached_file("InRelease"), "text/plain");
+        assert_eq!(content_type_for_cached_file("Release"), "text/plain");
+        assert_eq!(content_type_for_cached_file("Packages"), "text/plain");
+        assert_eq!(content_type_for_cached_file("Sources"), "text/plain");
+
+        // Structured-layout debnames (distribution / component / arch prefixes).
+        assert_eq!(content_type_for_cached_file("sid_InRelease"), "text/plain");
+        assert_eq!(content_type_for_cached_file("sid_Release"), "text/plain");
+        assert_eq!(
+            content_type_for_cached_file("sid_main_binary-amd64_Release"),
+            "text/plain"
+        );
+        assert_eq!(
+            content_type_for_cached_file("sid_main_binary-amd64_Packages"),
+            "text/plain"
+        );
+        assert_eq!(
+            content_type_for_cached_file("sid_main_Sources"),
+            "text/plain"
+        );
+    }
+
+    #[test]
+    fn content_type_for_release_gpg() {
+        assert_eq!(
+            content_type_for_cached_file("Release.gpg"),
+            "application/pgp-signature"
+        );
+        assert_eq!(
+            content_type_for_cached_file("sid_Release.gpg"),
+            "application/pgp-signature"
+        );
+    }
+
+    #[test]
+    fn content_type_for_extension_files_unchanged() {
+        // Compressed manifests must keep their compression Content-Type —
+        // the `_Packages` suffix on `Packages.gz` must not coerce it to text.
+        assert_eq!(
+            content_type_for_cached_file("sid_main_binary-amd64_Packages.gz"),
+            "application/gzip"
+        );
+        assert_eq!(
+            content_type_for_cached_file("sid_main_Sources.xz"),
+            "application/x-xz"
+        );
+        assert_eq!(
+            content_type_for_cached_file("firefox-esr_115.9.1esr-1_amd64.deb"),
+            "application/vnd.debian.binary-package"
+        );
+        assert_eq!(
+            content_type_for_cached_file("unknown_no_extension"),
+            "application/octet-stream"
+        );
+    }
 }
