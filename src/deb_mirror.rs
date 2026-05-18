@@ -393,14 +393,20 @@ pub(crate) const MAX_NORMALIZED_PATH_LEN: usize = 16 * 1024;
 /// single `/`.
 ///
 /// APT clients with a trailing slash in their `sources.list` mirror URI
-/// produce request paths like `/debian//dists/...`; without normalisation
-/// the `//` pollutes the parsed `mirror_path`.  The fast path returns
-/// `Cow::Borrowed` (zero allocation) when no `//` is present; the slow
-/// path allocates a single normalised `String`.  Idempotent and safe to
-/// call twice.  Iterates `chars()` so non-ASCII codepoints are preserved
-/// verbatim; later percent-decoding and non-ASCII rejection in
-/// `decode_validate` / `is_unsafe_proxy_path` get the original byte
-/// sequence.
+/// produce request paths like `/debian//dists/...`; flat-repo entries of
+/// the form `deb URI /` cause apt to emit `/./` between the base URI and
+/// the filename (e.g. NVIDIA's CUDA repos).  Without normalisation either
+/// artefact pollutes the parsed `mirror_path` and trips
+/// `valid_path_segment`.  Collapses `//` runs and strips standalone `.`
+/// segments per RFC 3986 §5.2.4 — `..` is intentionally preserved so
+/// `is_unsafe_proxy_path` can still reject real traversal attempts.
+///
+/// The fast path returns `Cow::Borrowed` (zero allocation) when neither
+/// `//` nor a bare `.` segment is present; the slow path allocates a
+/// single normalised `String`.  Idempotent and safe to call twice.
+/// Non-ASCII codepoints are preserved verbatim; later percent-decoding
+/// and non-ASCII rejection in `decode_validate` / `is_unsafe_proxy_path`
+/// get the original byte sequence.
 ///
 /// Inputs longer than [`MAX_NORMALIZED_PATH_LEN`] are returned verbatim as
 /// `Cow::Borrowed`.  Truncating the output would create a validator-bypass
@@ -409,30 +415,48 @@ pub(crate) const MAX_NORMALIZED_PATH_LEN: usize = 16 * 1024;
 /// oversize input through unchanged lets the downstream parser reject it.
 #[must_use]
 pub(crate) fn normalize_uri_path(path: &str) -> Cow<'_, str> {
-    if !path.contains("//") {
+    if !needs_normalization(path) {
         return Cow::Borrowed(path);
     }
-    // Fast path bailed; the input contains at least one `//` run. Cap the
-    // allocation at MAX_NORMALIZED_PATH_LEN to bound work; over-cap inputs
-    // bail unchanged rather than risk truncating away a `..` traversal
-    // segment.
+    // Fast path bailed. Cap the allocation at MAX_NORMALIZED_PATH_LEN to
+    // bound work; over-cap inputs bail unchanged rather than risk
+    // truncating away a `..` traversal segment.
     if path.len() > MAX_NORMALIZED_PATH_LEN {
         return Cow::Borrowed(path);
     }
+
+    let leading_slash = path.starts_with('/');
+    let trailing_slash = path.len() > 1 && path.ends_with('/');
+
     let mut out = String::with_capacity(path.len());
-    let mut prev_slash = false;
-    for c in path.chars() {
-        if c == '/' {
-            if !prev_slash {
-                out.push('/');
-            }
-            prev_slash = true;
-        } else {
-            out.push(c);
-            prev_slash = false;
+    if leading_slash {
+        out.push('/');
+    }
+    let mut wrote_any = false;
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
         }
+        if wrote_any {
+            out.push('/');
+        }
+        out.push_str(seg);
+        wrote_any = true;
+    }
+    if trailing_slash && !out.ends_with('/') {
+        out.push('/');
     }
     Cow::Owned(out)
+}
+
+/// Whether `normalize_uri_path` would change `path`. Triggers on either
+/// a `//` run or a standalone `.` segment.
+#[must_use]
+fn needs_normalization(path: &str) -> bool {
+    if path.contains("//") {
+        return true;
+    }
+    path.split('/').any(|seg| seg == ".")
 }
 
 /// Parses a request path into the mirror path and the filename.
@@ -1697,6 +1721,78 @@ mod tests {
                 mirror_path: "debian",
                 distribution: "trixie",
                 filename: "InRelease"
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_uri_path_dot_segments() {
+        use std::borrow::Cow;
+
+        // Fast path: no bare `.` segment → borrowed.
+        let p = "/foo/bar";
+        assert!(matches!(normalize_uri_path(p), Cow::Borrowed(_)));
+
+        // Slow path: standalone `.` segment is removed (RFC 3986 §5.2.4).
+        let out = normalize_uri_path("/foo/./bar");
+        assert!(matches!(out, Cow::Owned(_)));
+        assert_eq!(out, "/foo/bar");
+
+        // Leading, trailing, repeated, and root-only dot segments.
+        assert_eq!(normalize_uri_path("/./foo"), "/foo");
+        assert_eq!(normalize_uri_path("/foo/./"), "/foo/");
+        assert_eq!(normalize_uri_path("/./"), "/");
+        assert_eq!(normalize_uri_path("/."), "/");
+        assert_eq!(normalize_uri_path("/foo/./bar/./baz"), "/foo/bar/baz");
+
+        // Mixed `//` and `/./` collapse together.
+        assert_eq!(normalize_uri_path("/foo//./bar"), "/foo/bar");
+        assert_eq!(normalize_uri_path("/foo/.//bar"), "/foo/bar");
+
+        // Idempotent.
+        let once = normalize_uri_path("/foo/./bar");
+        let twice = normalize_uri_path(&once);
+        assert_eq!(once, twice);
+
+        // Negative: a `.` *inside* a longer segment is part of a legitimate
+        // name (`.well-known`, `apt.llvm.org`, `Packages.gz`, dotfiles) and
+        // must not be touched.
+        assert!(matches!(
+            normalize_uri_path("/.well-known/foo"),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(normalize_uri_path("/foo/.bar"), "/foo/.bar");
+        assert_eq!(normalize_uri_path("/foo/bar."), "/foo/bar.");
+        assert_eq!(normalize_uri_path("/foo/..bar"), "/foo/..bar");
+        assert_eq!(
+            normalize_uri_path("/dists/sid/main/binary-amd64/Packages.gz"),
+            "/dists/sid/main/binary-amd64/Packages.gz"
+        );
+
+        // Negative: `..` is a real traversal and must be preserved so that
+        // `is_unsafe_proxy_path` can still reject it downstream.
+        assert!(matches!(
+            normalize_uri_path("/foo/../bar"),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(normalize_uri_path("/foo/../bar"), "/foo/../bar");
+
+        // Negative: percent-encoded `%2E` is opaque at this layer — we only
+        // collapse literal `.` segments. Decoding happens later.
+        assert!(matches!(
+            normalize_uri_path("/foo/%2E/bar"),
+            Cow::Borrowed(_)
+        ));
+
+        // End-to-end: NVIDIA-style flat-repo URL with apt's `./` artifact
+        // parses + classifies successfully after normalisation.
+        let normalized = normalize_uri_path("/compute/cuda/repos/debian13/x86_64/./InRelease");
+        assert_eq!(
+            parse_request_path(&normalized),
+            Some(ResourceFile::Flat {
+                kind: FlatKind::Metadata,
+                mirror_path: "compute/cuda/repos/debian13/x86_64",
+                filename: "InRelease",
             })
         );
     }
