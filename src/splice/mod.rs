@@ -99,6 +99,7 @@ use crate::{
     active_downloads::{ActiveDownloadStatus, Declined, OriginateOutcome, Origination},
     build_info::APP_VIA,
     cache_metadata::{self, write_upstream_metadata},
+    client_counter,
     content_type::{content_type_for_cached_file, warn_on_content_type_mismatch},
     global_cache_quota, global_config, global_verify_throttle, metrics, static_assert,
     warn_once_or_debug, warn_once_or_info, warn_once_or_info_logged,
@@ -1028,6 +1029,10 @@ async fn relay_passthrough(
     // arm, which records that status itself.
     metrics::REQUESTS_PASSTHROUGH.increment();
     metrics::record_client_status(upstream_resp.status_code);
+    // The relay ships bytes to the client synchronously in this frame, so it
+    // holds its own `ACTIVE_CLIENT_DOWNLOADS` count until it ends, like the
+    // simple proxy's relay and hyper's passthrough body.
+    let _client_count = client_counter::ClientDownload::new();
     write_all_to_stream(
         client.stream,
         passthrough_headers.as_bytes(),
