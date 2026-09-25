@@ -78,12 +78,15 @@ pub(crate) enum CommitError {
     ChecksumMismatch,
     /// Reading the temp file back for verification, or the `fstat` that ties
     /// the rename to the verified file, failed. Fail-closed: a file that
-    /// cannot be verified does not enter the cache.
+    /// cannot be verified does not enter the cache. Counted
+    /// (`CACHE_IO_FAILURE`) and logged where it arises.
     #[error("verification I/O error")]
     VerifyIo(#[source] std::io::Error),
     /// [`rename_into_cache`] of the verified temp file failed — either the
     /// `rename(2)` itself, or the `create_dir_all` it falls back to when the
-    /// destination directory turns out to be missing.
+    /// destination directory turns out to be missing — or the path no longer
+    /// named the verified file, or the job died while renaming. Counted and
+    /// logged once, by the caller (`RenameBarrier::commit`), never here.
     #[error("rename failed")]
     Rename(#[source] std::io::Error),
 }
@@ -1080,16 +1083,12 @@ pub(crate) async fn verify_and_rename(
             });
         }
         Err(join_err) => {
-            metrics::CACHE_IO_FAILURE.increment();
             let error = if renaming.load(Ordering::Relaxed) {
-                error!(
-                    "Failed to run the rename task for {} from host {}; discarding the download, not caching:  {}",
-                    plan.debname,
-                    plan.host,
-                    ErrorReport(&join_err),
-                );
+                // Counted and logged by the caller, like every other
+                // `CommitError::Rename` (`RenameBarrier::commit`).
                 CommitError::Rename(std::io::Error::other(join_err))
             } else {
+                metrics::CACHE_IO_FAILURE.increment();
                 error!(
                     "Failed to run the verification task for {} from host {}; discarding the download, not caching:  {}",
                     plan.debname,
