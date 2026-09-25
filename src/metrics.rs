@@ -204,7 +204,11 @@ pub(crate) static INGEST_FAILED_MARKED: Counter = Counter::new();
 ///     hyper-served request lifetime."
 pub(crate) static CLIENT_DISCONNECTED_MID_BODY: Counter = Counter::new();
 
-/// Requests rejected because the path failed safety validation.
+/// Requests rejected with 400 because the path failed safety validation:
+/// traversal or control bytes in the whole path (`is_unsafe_cache_path`,
+/// `is_unsafe_proxy_path`), or a cached route's field whose percent-decoded
+/// value its validator refuses (`ClassifyError::InvalidValue`: a `..`, a
+/// `/` smuggled as `%2F`, a control byte).
 pub(crate) static UNSAFE_PATH_REJECTED: Counter = Counter::new();
 /// Requests rejected because they targeted a `pdiff` resource.
 pub(crate) static PDIFF_REJECTED: Counter = Counter::new();

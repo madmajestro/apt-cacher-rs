@@ -278,7 +278,7 @@ fn build_requests_group(g: &mut Groups) {
         );
         t.row_tip(
             "Rejected (unsafe path)",
-            "Client requests refused because their path failed the traversal and encoding checks.",
+            "Client requests refused with 400 because their path failed the traversal and encoding checks, including a percent-decoded cache-name field (`..`, `%2F`, a control byte).",
             WarnNonzero(metrics::UNSAFE_PATH_REJECTED.get()),
         );
         t.row_tip(

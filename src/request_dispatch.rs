@@ -697,6 +697,11 @@ fn decide_request(
                     "Unsupported {kind} `{}` from client {client}; rejecting with 400",
                     decoded.escape_debug()
                 );
+                // The field validators are the cached route's path-safety
+                // gate: a `..`, a `/` smuggled as `%2F` or a control byte in
+                // a decoded field is refused here, before the whole-path
+                // `is_unsafe_cache_path` check could see it.
+                metrics::UNSAFE_PATH_REJECTED.increment();
                 return Decision::Reject(RejectReason::InvalidValue);
             }
             Err(ClassifyError::JoinedFieldUnderscore { kind, decoded }) => {
@@ -1588,6 +1593,7 @@ mod tests {
     fn reject_invalid_value_in_pool_filename() {
         // `%2F` decodes to `/`, which `valid_filename` refuses; the decode
         // happens per field, so the structural parse above it still succeeds.
+        let unsafe_before = metrics::UNSAFE_PATH_REJECTED.get();
         let decision = decide_request(
             "/debian/pool/main/f/foo/foo%2Fbar_1.0_amd64.deb",
             fake_host(),
@@ -1601,6 +1607,11 @@ mod tests {
         assert!(
             matches!(decision, Decision::Reject(RejectReason::InvalidValue)),
             "expected InvalidValue reject, got {decision:?}"
+        );
+        assert_eq!(
+            metrics::UNSAFE_PATH_REJECTED.get(),
+            unsafe_before + 1,
+            "a field the safety validator refuses is an unsafe-path rejection"
         );
     }
 
