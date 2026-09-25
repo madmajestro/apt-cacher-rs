@@ -224,7 +224,7 @@ impl Logged {
 
     /// `debug!` the line and prove it: a terminal failure whose outcome the
     /// caller reports itself (cleanup's decision log).
-    #[cfg(feature = "splice")]
+    #[cfg(all(feature = "splice", not(feature = "hyper")))]
     pub(crate) fn debug(args: std::fmt::Arguments<'_>) -> Self {
         tracing::debug!("{args}");
         Self(())

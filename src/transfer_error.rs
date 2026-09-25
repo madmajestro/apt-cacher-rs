@@ -347,8 +347,8 @@ impl UpstreamError {
     }
 
     /// End the transfer this failure stops outside any download runner or
-    /// delivery sink (a pass-through relay's connect, a cleanup fetch, a
-    /// connection-reuse drain): count it, then log it through `log`, whose
+    /// delivery sink (a pass-through relay's connect, a cleanup fetch):
+    /// count it, then log it through `log`, whose
     /// [`Logged`] proves the line was written.
     pub(crate) fn conclude(self, log: impl FnOnce(&Self) -> Logged) -> Reported<Self> {
         self.record_terminal();

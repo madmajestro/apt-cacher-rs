@@ -18,7 +18,6 @@ use crate::cache_layout::ConnectionDetails;
 use crate::config::ClientHost;
 use crate::deb_mirror::{Mirror, MirrorKind};
 use crate::error::ErrorReport;
-use crate::log_once::Logged;
 use crate::partial_file;
 use crate::scheme_cache::SchemeDecision;
 use crate::upstream_head::{BodyFraming, RejectGates, RejectReason};
@@ -102,16 +101,19 @@ impl UpstreamExchange {
         .await;
         match result {
             Ok(Ok(_body)) => {}
-            // A drain that hits a local limit ends the drain for good: it is
-            // concluded, so its counter (`UPSTREAM_BODY_LIMIT`, say) counts.
+            // Not drainable (too large, a protocol violation in the body, a
+            // broken connection): the connection is simply not pooled. The
+            // response was abandoned -- a followed 3xx, a discarded resume
+            // answer -- and the request did not fail, so nothing counts and
+            // the mirror is not blamed; hyper never counts dropping a
+            // connection either.
             Ok(Err(err)) => {
-                let _reported = err.conclude(|err| {
-                    Logged::debug(format_args!(
-                        "{log_prefix} not reusing the upstream connection after a {} response, its body could not be drained:  {}",
-                        response.status_code,
-                        ErrorReport(err)
-                    ))
-                });
+                debug!(
+                    "{log_prefix} not reusing the upstream connection after a {} response, its body could not be drained within {} bytes:  {}",
+                    response.status_code,
+                    MAX_ERROR_BODY_DRAIN,
+                    ErrorReport(&err)
+                );
             }
             Err(_timeout @ tokio::time::error::Elapsed { .. }) => {
                 debug!(

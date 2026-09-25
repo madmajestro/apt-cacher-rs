@@ -705,7 +705,7 @@ fn build_upstream_group(g: &mut Groups) {
         );
         t.row_tip(
             "Body Size Limits",
-            "Responses exceeding a local body buffering, relay, or connection-reuse drain limit. These responses may be valid HTTP and do not count as Protocol Violations.",
+            "Responses exceeding a local body buffering or relay limit. These responses may be valid HTTP and do not count as Protocol Violations. A body merely too large to drain for connection reuse is not counted.",
             WarnNonzero(metrics::UPSTREAM_BODY_LIMIT.get()),
         );
         t.row_tip(

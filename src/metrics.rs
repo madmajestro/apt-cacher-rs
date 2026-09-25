@@ -421,11 +421,16 @@ pub(crate) static SERVED_CHANNEL: Counter = Counter::new();
 /// Mirror responses that violated the HTTP contract: body exceeded or
 /// undershot the announced `Content-Length`, missing or mismatched
 /// `Content-Range`, missing `Content-Length` on a non-volatile fetch, or
-/// `206 Partial Content` returned without a Range request.
+/// `206 Partial Content` returned without a Range request. Not a violation
+/// in the body of a response the proxy abandoned and only drains for
+/// connection reuse (splice's `UpstreamExchange::dispose`): that connection
+/// is just not pooled.
 pub(crate) static UPSTREAM_PROTOCOL_VIOLATION: Counter = Counter::new();
 
-/// Responses exceeding a local body buffering, relay, or connection-reuse
-/// drain limit. The response may be valid HTTP; these are not protocol faults.
+/// Responses exceeding a local body buffering or relay limit. The response
+/// may be valid HTTP; these are not protocol faults. A body too large to
+/// drain for connection reuse is not counted: that connection is just not
+/// pooled.
 pub(crate) static UPSTREAM_BODY_LIMIT: Counter = Counter::new();
 
 /// Mirror responses that returned `206 Partial Content` for a request the
