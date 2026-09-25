@@ -1154,6 +1154,76 @@ mod tests {
         );
     }
 
+    /// A joiner of an originator the verify throttle declined is a request
+    /// the throttle rejected too, counted like the originator's own 503.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_throttled_decline_counts_its_joiners() {
+        use crate::active_downloads::{JoinFailure, await_serveable};
+        let active = ActiveDownloads::new();
+        let key = key("throttled.deb");
+        let details = details_for(&key);
+        let origination = active.originate_uncapped(key.as_ref());
+        let status = Arc::clone(&origination.status);
+        let mut barrier = InitBarrier::new(origination, active.clone(), &details, "/throttled.deb");
+        let _settled = barrier
+            .decline(Declined::VerifyThrottled {
+                remaining: std::time::Duration::from_secs(5),
+            })
+            .await;
+        drop(barrier);
+        let rejected = metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.get();
+        let failure = await_serveable(&status, &details).await.err();
+        assert!(
+            matches!(
+                failure,
+                Some(JoinFailure::Declined(Declined::VerifyThrottled { .. }))
+            ),
+            "{failure:?}"
+        );
+        assert_eq!(
+            metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.get(),
+            rejected + 1
+        );
+    }
+
+    /// Cleanup's synthetic client skips the pre-upstream verify-throttle
+    /// gate, so a throttled originator's decline neither rejects nor counts
+    /// it: the joiner is told to fetch the file itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_throttled_decline_exempts_a_cleanup_joiner() {
+        use crate::active_downloads::await_serveable;
+        use crate::client_info::ClientInfo;
+        let active = ActiveDownloads::new();
+        let key = key("cleanup-throttled.deb");
+        let details = details_for(&key);
+        let origination = active.originate_uncapped(key.as_ref());
+        let status = Arc::clone(&origination.status);
+        let mut barrier = InitBarrier::new(
+            origination,
+            active.clone(),
+            &details,
+            "/cleanup-throttled.deb",
+        );
+        let _settled = barrier
+            .decline(Declined::VerifyThrottled {
+                remaining: std::time::Duration::from_secs(5),
+            })
+            .await;
+        drop(barrier);
+        let cleanup = ConnectionDetails {
+            client: ClientInfo::new_cleanup(),
+            ..details_for(&key)
+        };
+        let rejected = metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.get();
+        let failure = await_serveable(&status, &cleanup)
+            .await
+            .err()
+            .expect("a declined download serves nothing");
+        assert!(failure.exempts(&cleanup.client), "{failure:?}");
+        assert!(!failure.exempts(&details.client), "{failure:?}");
+        assert_eq!(metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.get(), rejected);
+    }
+
     #[cfg(feature = "splice")]
     fn pause_blocking_pool(runtime: &tokio::runtime::Runtime) -> std::sync::mpsc::Sender<()> {
         let (resume, paused) = std::sync::mpsc::channel();

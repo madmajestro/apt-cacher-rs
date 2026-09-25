@@ -293,7 +293,7 @@ fn build_requests_group(g: &mut Groups) {
         );
         t.row_tip(
             "Rejected (verify-throttled)",
-            "Downloads refused because the resource recently failed checksum verification.",
+            "Requests refused with 503 because the resource recently failed checksum verification, clients that joined a refused download included.",
             WarnNonzero(metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.get()),
         );
         t.row_tip(

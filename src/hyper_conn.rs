@@ -37,8 +37,8 @@ use crate::{
     AppState, Never, Scheme,
     accounted_body::{AccountedBody, Subject},
     active_downloads::{
-        ActiveDownloadStatus, AttachedReaderState, Declined, InsertOutcome, Origination, Serveable,
-        await_serveable,
+        ActiveDownloadStatus, AttachedReaderState, Declined, InsertOutcome, JoinFailure,
+        Origination, Serveable, await_serveable,
     },
     build_info::{APP_USER_AGENT, APP_VIA},
     cache_conditional::{CacheInfo, RangeRequestHeaders, ServeParams, ServePlan},
@@ -1210,7 +1210,32 @@ async fn serve_downloading_file(
     prefetched_upstream_metadata: Option<&UpstreamMetadata>,
     role: Role,
 ) -> Response<ProxyCacheBody> {
-    match await_serveable(&status, &conn_details).await {
+    let joined = await_serveable(&status, &conn_details).await;
+    // Boxed: inline, the join result and the serve future beside it grow
+    // `serve_new_file_worker`'s future, whose tail this is, past
+    // `clippy::large_futures` (see its definition).
+    Box::pin(serve_joined(
+        joined,
+        conn_details,
+        req,
+        status,
+        prefetched_upstream_metadata,
+        role,
+    ))
+    .await
+}
+
+/// Answer a joiner from what [`await_serveable`] made of the download.
+#[must_use]
+async fn serve_joined(
+    joined: Result<Serveable, JoinFailure>,
+    conn_details: ConnectionDetails,
+    req: &Request<Empty<()>>,
+    status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
+    prefetched_upstream_metadata: Option<&UpstreamMetadata>,
+    role: Role,
+) -> Response<ProxyCacheBody> {
+    match joined {
         Ok(Serveable::InProgress {
             file,
             path,
@@ -1345,6 +1370,11 @@ async fn serve_volatile_file(
 /// happened - in [`process_cache_request`] / [`serve_volatile_file`] for
 /// requests hyper looked up itself, in `sendfile_conn::try_sendfile_request`
 /// for a `HandoffPlan::CacheMiss` - so nothing is bumped here.
+///
+/// A joiner the originator's decline does not bind
+/// ([`JoinFailure::exempts`]: cleanup behind a verify-throttled client)
+/// looks the resource up again and, once the declined entry is retired,
+/// originates the fetch the pre-upstream gate lets it make.
 async fn serve_cache_miss(
     conn_details: ConnectionDetails,
     req: Request<Empty<()>>,
@@ -1352,46 +1382,58 @@ async fn serve_cache_miss(
     miss: CacheMiss,
     appstate: AppState,
 ) -> Response<ProxyCacheBody> {
-    match appstate.active_downloads.insert(conn_details.key()) {
-        InsertOutcome::Originator(origination) => {
-            let cfstate = match miss {
-                CacheMiss::NotFound => {
-                    trace!(
-                        "File {} not found, serving new version...",
-                        cache_path.display()
-                    );
-                    CacheFileStat::New
-                }
-                CacheMiss::StaleVolatile { file, size } => CacheFileStat::Volatile {
-                    file,
-                    file_path: cache_path,
-                    prev_size: size,
-                },
-            };
-            serve_new_file(conn_details, origination, req, cfstate, appstate).await
-        }
-        InsertOutcome::Joined { status } => {
-            match miss {
-                CacheMiss::NotFound => {
-                    trace!(
-                        "File {} not found, serving in-download version...",
-                        cache_path.display()
-                    );
-                    debug!(
-                        "Serving file {} already in download from mirror {} for client {}...",
-                        conn_details.debname, conn_details.mirror, conn_details.client
-                    );
-                }
-                CacheMiss::StaleVolatile { .. } => {
-                    debug!(
-                        "Serving file {} already in cache / download from mirror {} for client {}...",
-                        conn_details.debname, conn_details.mirror, conn_details.client
-                    );
-                }
+    loop {
+        return match appstate.active_downloads.insert(conn_details.key()) {
+            InsertOutcome::Originator(origination) => {
+                let cfstate = match miss {
+                    CacheMiss::NotFound => {
+                        trace!(
+                            "File {} not found, serving new version...",
+                            cache_path.display()
+                        );
+                        CacheFileStat::New
+                    }
+                    CacheMiss::StaleVolatile { file, size } => CacheFileStat::Volatile {
+                        file,
+                        file_path: cache_path,
+                        prev_size: size,
+                    },
+                };
+                serve_new_file(conn_details, origination, req, cfstate, appstate).await
             }
-            serve_downloading_file(conn_details, &req, status, None, Role::LateJoiner).await
-        }
-        InsertOutcome::AtCapacity { max } => upstream_cap_rejection(&conn_details, max),
+            InsertOutcome::Joined { status } => {
+                match miss {
+                    CacheMiss::NotFound => {
+                        trace!(
+                            "File {} not found, serving in-download version...",
+                            cache_path.display()
+                        );
+                        debug!(
+                            "Serving file {} already in download from mirror {} for client {}...",
+                            conn_details.debname, conn_details.mirror, conn_details.client
+                        );
+                    }
+                    CacheMiss::StaleVolatile { .. } => {
+                        debug!(
+                            "Serving file {} already in cache / download from mirror {} for client {}...",
+                            conn_details.debname, conn_details.mirror, conn_details.client
+                        );
+                    }
+                }
+                let joined = await_serveable(&status, &conn_details).await;
+                if let Err(failure) = &joined
+                    && failure.exempts(&conn_details.client)
+                {
+                    drop(status);
+                    // The decline publishes its status before it retires the
+                    // entry: let that removal land instead of re-joining it.
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                serve_joined(joined, conn_details, &req, status, None, Role::LateJoiner).await
+            }
+            InsertOutcome::AtCapacity { max } => upstream_cap_rejection(&conn_details, max),
+        };
     }
 }
 

@@ -40,6 +40,7 @@ use tracing::{debug, error, info};
 
 use crate::cache_layout::{CacheEntryKey, CacheEntryKeyRef, ConnectionDetails};
 use crate::cache_metadata::UpstreamMetadata;
+use crate::client_info::ClientInfo;
 use crate::error::ErrorReport;
 use crate::fs_open::{count_cache_failure, tokio_nofollow_options};
 use crate::guards::CANCELLED_DOWNLOAD;
@@ -255,7 +256,8 @@ pub(crate) enum JoinFailure {
     VerifyThrottled { remaining: std::time::Duration },
     /// Still `Init` after the writer signalled - a logic error.
     StateCorrupted,
-    /// Opening the file failed (`CACHE_IO_FAILURE` bumped).
+    /// Opening the file failed (`CACHE_IO_FAILURE` or `CACHE_NON_REGULAR`
+    /// bumped).
     CacheAccess,
 }
 
@@ -280,6 +282,20 @@ impl JoinFailure {
             ),
             Self::CacheAccess => (StatusCode::INTERNAL_SERVER_ERROR, "Cache Access Failure"),
         }
+    }
+
+    /// Whether the originator declined on a gate `client` is exempt from, so
+    /// the caller looks the resource up again and fetches it itself instead
+    /// of answering this failure: cleanup's synthetic client skips the
+    /// pre-upstream verify-throttle gate (a 503 would bail the mirror's
+    /// cleanup), so a throttled originator's decline is no answer for it.
+    /// Only hyper's `serve_cache_miss` can see such a joiner.
+    #[must_use]
+    pub(crate) fn exempts(&self, client: &ClientInfo) -> bool {
+        matches!(
+            self,
+            Self::Declined(Declined::VerifyThrottled { remaining: _ })
+        ) && client.is_cleanup_synthetic()
     }
 
     /// `Retry-After` value for the response, when the failure carries one.
@@ -416,7 +432,30 @@ pub(crate) async fn await_serveable(
             ActiveDownloadStatus::Aborted(reason) => {
                 let failure = match reason {
                     AbortReason::Failed(failure) => JoinFailure::Aborted(Arc::clone(failure)),
-                    AbortReason::Declined(why) => JoinFailure::Declined(*why),
+                    AbortReason::Declined(why) => {
+                        let why = *why;
+                        let failure = JoinFailure::Declined(why);
+                        if failure.exempts(&conn_details.client) {
+                            // Not rejected: the caller fetches it itself, as
+                            // the pre-upstream gate would have let it.
+                            drop(st);
+                            debug!(
+                                "Download of {} from mirror {}{} was declined ({why}); the exempt joining client {} fetches it itself",
+                                conn_details.debname,
+                                conn_details.mirror,
+                                conn_details.alias_suffix(),
+                                conn_details.client,
+                            );
+                            return Err(failure);
+                        }
+                        // The joiner gets the originator's 503: a request the
+                        // throttle rejected, like the `Discarded` joiner's in
+                        // `discarded_join` and the originator's own.
+                        if let Declined::VerifyThrottled { remaining: _ } = why {
+                            metrics::DOWNLOAD_REJECTED_VERIFY_THROTTLE.increment();
+                        }
+                        failure
+                    }
                     AbortReason::Discarded { checksum_mismatch } => {
                         let checksum_mismatch = *checksum_mismatch;
                         drop(st);
