@@ -30,7 +30,8 @@ pub(crate) enum Mechanism {
     /// hyper, buffered file read (`REQUESTS_COPY`).
     #[cfg(feature = "hyper")]
     Stream,
-    /// hyper, late joiner fed through an in-process channel.
+    /// hyper, streamed from an in-flight download through an in-process
+    /// channel: late joiners and the client that started the download.
     #[cfg(feature = "hyper")]
     Channel,
     /// sendfile(2) from the cache file.
@@ -89,12 +90,18 @@ impl Mechanism {
     }
 }
 
-/// Whether the client was served a finished cache entry or joined an
-/// in-flight download; only changes the wording of the completion line.
+/// Whether the client was served a finished cache entry, started the
+/// in-flight download it streams from, or joined one; only changes the
+/// wording of the completion line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Role {
     /// "Served cached file ... for client ..."
     Cached,
+    /// "Served downloading file ... for client ..." - the client whose
+    /// request started the download (hyper streams it from the download
+    /// like a joiner, but it joined nothing).
+    #[cfg(feature = "hyper")]
+    Originator,
     /// "Served downloading file ... for joining client ..." - keep the
     /// "joining client" wording, it is a documented log marker.
     LateJoiner,
@@ -104,6 +111,8 @@ impl Role {
     fn words(self) -> (&'static str, &'static str) {
         match self {
             Self::Cached => ("cached", "client"),
+            #[cfg(feature = "hyper")]
+            Self::Originator => ("downloading", "client"),
             Self::LateJoiner => ("downloading", "joining client"),
         }
     }

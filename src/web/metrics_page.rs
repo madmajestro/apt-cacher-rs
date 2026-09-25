@@ -478,7 +478,7 @@ fn build_delivery_group(g: &mut Groups) {
             t,
             "channel Requests \u{2192} Served",
             "channel Bytes",
-            "Late-joiner responses streamed via the hyper ChannelBody path while an upstream download is still in flight.",
+            "Responses streamed via the hyper ChannelBody path while their upstream download is still in flight: the client that started the download and any late joiners.",
             metrics::REQUESTS_CHANNEL.get(),
             metrics::SERVED_CHANNEL.get(),
             metrics::BYTES_SERVED_CHANNEL.get(),

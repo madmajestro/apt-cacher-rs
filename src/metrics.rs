@@ -306,10 +306,12 @@ pub(crate) static BYTES_SERVED_SPLICE: Accumulator = Accumulator::new();
 /// userspace writes are reported under `BYTES_SERVED_SPLICE` instead, since
 /// they are inseparable from the request's splice accounting.
 pub(crate) static BYTES_SERVED_COPY: Accumulator = Accumulator::new();
-/// Bytes delivered to late joiners via the hyper `ChannelBody` streaming path
-/// (`serve_unfinished_file`). Counted at frame-poll time (when hyper requests
-/// the frame, not when the kernel acks the write) — slightly overcounts on
-/// aborted clients vs. the post-write splice/sendfile counters.
+/// Bytes streamed from an in-flight download via the hyper `ChannelBody`
+/// path (`serve_unfinished_file`): late joiners and the hyper client whose
+/// request started the download. Counted per polled frame (when hyper
+/// requests the frame, not when the kernel acks the write) and published
+/// when the body ends — slightly overcounts on aborted clients vs. the
+/// post-write splice/sendfile counters.
 pub(crate) static BYTES_SERVED_CHANNEL: Accumulator = Accumulator::new();
 
 /// Bytes proxied uncached. Counted at frame-poll time (no post-write hook in
@@ -391,7 +393,9 @@ pub(crate) static REQUESTS_SPLICE: Counter = Counter::new();
 pub(crate) static SERVED_SPLICE: Counter = Counter::new();
 pub(crate) static REQUESTS_COPY: Counter = Counter::new();
 pub(crate) static SERVED_COPY: Counter = Counter::new();
-/// `ChannelBody`, i.e. late joiners streamed from an in-flight download.
+/// `ChannelBody`: streamed from an in-flight download, to a late joiner or
+/// to the hyper client that started it (`LATE_JOINERS_TOTAL` counts the
+/// joiners alone).
 pub(crate) static REQUESTS_CHANNEL: Counter = Counter::new();
 pub(crate) static SERVED_CHANNEL: Counter = Counter::new();
 

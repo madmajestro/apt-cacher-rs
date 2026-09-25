@@ -803,6 +803,11 @@ fn passthrough_response(
               this in an async match arm alongside other async branches, so \
               staying async keeps the call site uniform"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fields of one Serveable::InProgress plus the request context; \
+              a carrier struct would only rename them"
+)]
 async fn serve_unfinished_file(
     conn_details: ConnectionDetails,
     mut file: tokio::fs::File,
@@ -811,6 +816,7 @@ async fn serve_unfinished_file(
     content_length: ContentLength,
     mut receiver: tokio::sync::watch::Receiver<()>,
     upstream_metadata: &UpstreamMetadata,
+    role: Role,
 ) -> Response<ProxyCacheBody> {
     let config = global_config();
 
@@ -897,7 +903,7 @@ async fn serve_unfinished_file(
                 ContentLength::Exact(size) => Some(size.get()),
                 ContentLength::Unknown(_) => None,
             },
-            role: Role::LateJoiner,
+            role,
             partial: false,
         },
     );
@@ -1154,6 +1160,7 @@ async fn serve_downloading_file(
     req: &Request<Empty<()>>,
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
     prefetched_upstream_metadata: Option<&UpstreamMetadata>,
+    role: Role,
 ) -> Response<ProxyCacheBody> {
     match await_serveable(&status, &conn_details).await {
         Ok(Serveable::InProgress {
@@ -1163,7 +1170,17 @@ async fn serve_downloading_file(
             rx,
             meta,
         }) => {
-            serve_unfinished_file(conn_details, file, path, status, content_length, rx, &meta).await
+            serve_unfinished_file(
+                conn_details,
+                file,
+                path,
+                status,
+                content_length,
+                rx,
+                &meta,
+                role,
+            )
+            .await
         }
         Ok(Serveable::Complete { file, path, meta }) => {
             drop(status);
@@ -1324,7 +1341,7 @@ async fn serve_cache_miss(
                     );
                 }
             }
-            serve_downloading_file(conn_details, &req, status, None).await
+            serve_downloading_file(conn_details, &req, status, None, Role::LateJoiner).await
         }
         InsertOutcome::AtCapacity { max } => upstream_cap_rejection(&conn_details, max),
     }
@@ -2412,7 +2429,14 @@ async fn serve_new_file_worker(
 
     Ok((
         settled,
-        serve_downloading_file(conn_details.clone(), req, status, Some(&upstream_metadata)).await,
+        serve_downloading_file(
+            conn_details.clone(),
+            req,
+            status,
+            Some(&upstream_metadata),
+            Role::Originator,
+        )
+        .await,
     ))
 }
 
@@ -2804,7 +2828,8 @@ async fn pre_process_client_request(
                 "Serving file {} already in download from mirror {} for client {}...",
                 conn_details.debname, conn_details.mirror, conn_details.client
             );
-            return serve_downloading_file(conn_details, &req, status, None).await;
+            return serve_downloading_file(conn_details, &req, status, None, Role::LateJoiner)
+                .await;
         }
         #[cfg(not(feature = "splice"))]
         Some(HandoffPlan::Passthrough {
