@@ -713,6 +713,41 @@ fn upstream_body_error(error: hyper::Error) -> UpstreamError {
     UpstreamError::transport("read upstream response body", error)
 }
 
+/// A relayed upstream body that counts `BYTES_DOWNLOADED_UPSTREAM` per data
+/// frame read, like splice's relays and the download worker, rather than
+/// in the client-side accounting: a relay the client abandons still pulled
+/// what it read. A hand-written wrapper, not `BodyExt::map_frame`: the relay
+/// strips the upstream's framing lines and hyper re-frames the response from
+/// this body's `size_hint`/`is_end_stream`, which `MapFrame` does not
+/// forward -- the client would lose its `Content-Length`.
+struct UpstreamCountedBody(Incoming);
+
+impl Body for UpstreamCountedBody {
+    type Data = bytes::Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let polled = std::pin::Pin::new(&mut self.0).poll_frame(cx);
+        if let std::task::Poll::Ready(Some(Ok(frame))) = &polled
+            && let Some(data) = frame.data_ref()
+        {
+            metrics::BYTES_DOWNLOADED_UPSTREAM.increment_by(data.len() as u64);
+        }
+        polled
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.0.size_hint()
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+}
+
 /// Finish an uncached passthrough: drop the upstream lines a relay must not
 /// forward ([`RelayedHeaders`]), account the upstream body, apply the client
 /// rate check and append our `Via`.  The three passthrough sites (a fetch the
@@ -747,10 +782,9 @@ fn passthrough_response(
         parts.headers.remove(name);
     }
 
-    let body = rated_client_body(
-        body.map_err(|error| DeliveryFailure::Upstream(upstream_body_error(error))),
-        subject,
-    );
+    let body = UpstreamCountedBody(body)
+        .map_err(|error| DeliveryFailure::Upstream(upstream_body_error(error)));
+    let body = rated_client_body(body, subject);
 
     let mut response = Response::from_parts(parts, body);
     response
