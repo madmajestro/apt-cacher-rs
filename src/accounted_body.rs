@@ -9,6 +9,12 @@
 //! delivered" (the `SERVED_*` credit) is decided here: every promised byte
 //! shipped for a cached file, clean end of stream for a passthrough, and no
 //! error surfaced either way.
+//!
+//! Cleanup's synthetic index fetches (`ClientInfo::is_cleanup_synthetic`)
+//! read their response through the same body but are no client: the
+//! wrapper then stays inert (no `REQUESTS_*`/`SERVED_*`/bytes credit, no
+//! active-download slot, no completion line, no `deliveries` row). The
+//! cleanup reader reports a failed body itself.
 
 use std::{pin::Pin, task::Poll};
 
@@ -59,6 +65,29 @@ pub(crate) enum Subject {
     },
 }
 
+impl Subject {
+    #[must_use]
+    fn client(&self) -> &ClientInfo {
+        match self {
+            Self::Cached {
+                conn_details,
+                mechanism: _,
+                size: _,
+                role: _,
+                partial: _,
+            } => &conn_details.client,
+            Self::Passthrough {
+                host: _,
+                path: _,
+                client,
+                request_received_at: _,
+                request_sent: _,
+                relay_slot: _,
+            } => client,
+        }
+    }
+}
+
 #[pin_project(PinnedDrop)]
 pub(crate) struct AccountedBody<B: Body<Error = DeliveryFailure>> {
     #[pin]
@@ -70,18 +99,25 @@ pub(crate) struct AccountedBody<B: Body<Error = DeliveryFailure>> {
     /// `Ready(None)`.
     error: Option<DeliveryFailure>,
     start: PreciseInstant,
-    _counter: ClientDownload,
+    /// `None` for a cleanup-synthetic subject, which is accounted nowhere.
+    client_slot: Option<ClientDownload>,
 }
 
 impl<B: Body<Error = DeliveryFailure>> AccountedBody<B> {
     /// Wrap `inner`; bumps the subject's `REQUESTS_*` counter and takes the
-    /// active-download slot. Source and client-rate adapters are inside this owner.
+    /// active-download slot, unless the subject is cleanup-synthetic. Source
+    /// and client-rate adapters are inside this owner.
     #[must_use]
     pub(crate) fn new(inner: B, subject: Subject) -> Self {
-        match &subject {
-            Subject::Cached { mechanism, .. } => mechanism.requests().increment(),
-            Subject::Passthrough { .. } => metrics::REQUESTS_PASSTHROUGH.increment(),
-        }
+        let client_slot = if subject.client().is_cleanup_synthetic() {
+            None
+        } else {
+            match &subject {
+                Subject::Cached { mechanism, .. } => mechanism.requests().increment(),
+                Subject::Passthrough { .. } => metrics::REQUESTS_PASSTHROUGH.increment(),
+            }
+            Some(ClientDownload::new())
+        };
         Self {
             inner,
             subject: Some(subject),
@@ -89,7 +125,7 @@ impl<B: Body<Error = DeliveryFailure>> AccountedBody<B> {
             end_of_stream: sticky::Bool::new(),
             error: None,
             start: PreciseInstant::now(),
-            _counter: ClientDownload::new(),
+            client_slot,
         }
     }
 }
@@ -161,6 +197,10 @@ impl<B: Body<Error = DeliveryFailure>> PinnedDrop for AccountedBody<B> {
         let this = self.project();
         let error = this.error.take();
         let subject = this.subject.take().expect("set in new()");
+        if this.client_slot.is_none() {
+            // Cleanup-synthetic: nothing to account (see the module doc).
+            return;
+        }
         // Logging is synchronous and the DB enqueue has a sync fast path -
         // no per-request task spawn needed here.
         match subject {
@@ -353,6 +393,47 @@ mod tests {
         assert!(matches!(db_rx.try_recv(), Ok(DatabaseCommand::Transfer(cmd)) if cmd.size == 2));
         assert!(db_rx.try_recv().is_err());
     }
+    /// Cleanup's synthetic index fetch reads a real hyper body but is no
+    /// client: no request, served or byte credit, no `deliveries` row.
+    #[tokio::test]
+    async fn cleanup_synthetic_subject_is_not_accounted() {
+        let (db_tx, mut db_rx) = tokio::sync::mpsc::channel(16);
+        assert!(
+            crate::database_task::DB_TASK_QUEUE_SENDER
+                .set(db_tx)
+                .is_ok()
+        );
+        let requests_before = metrics::REQUESTS_CHANNEL.get();
+        let served_before = metrics::SERVED_CHANNEL.get();
+        let total_before = metrics::SERVED_TOTAL.get();
+        let bytes_before = metrics::BYTES_SERVED_CHANNEL.get();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.send(ChannelEvent::Data(Bytes::from_static(b"abcd")))
+            .await
+            .unwrap();
+        let mut conn_details = connection_details("Packages.xz");
+        conn_details.client = ClientInfo::new_cleanup();
+        let mut body = AccountedBody::new(
+            ChannelBody::new(rx, ContentLength::Exact(nonzero!(4))),
+            Subject::Cached {
+                conn_details,
+                mechanism: Mechanism::Channel,
+                size: Some(4),
+                role: Role::LateJoiner,
+                partial: false,
+            },
+        );
+        assert!(next(&mut body).await.unwrap().is_ok());
+        drop(body);
+
+        assert_eq!(metrics::REQUESTS_CHANNEL.get(), requests_before);
+        assert_eq!(metrics::SERVED_CHANNEL.get(), served_before);
+        assert_eq!(metrics::SERVED_TOTAL.get(), total_before);
+        assert_eq!(metrics::BYTES_SERVED_CHANNEL.get(), bytes_before);
+        assert!(db_rx.try_recv().is_err());
+    }
+
     #[test]
     fn passthrough_final_frame_is_clean_completion() {
         use crate::rate_checked_body::ClientBody;
