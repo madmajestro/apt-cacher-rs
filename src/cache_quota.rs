@@ -804,7 +804,19 @@ impl CacheQuota {
         window: ReconcileWindow,
     ) -> Reconciled {
         let mut mg = self.inner.accounting.lock();
-        mg.size = mg.size.saturating_sub(removed);
+        // Removing more than was accounted is the drift `Accounting::subtract`
+        // reports as corruption; counted and logged the same way here, though
+        // the reconcile below repairs it at once.
+        mg.size = if let Some(val) = mg.size.checked_sub(removed) {
+            val
+        } else {
+            metrics::CACHE_SIZE_CORRUPTION.increment();
+            error!(
+                "Cache-size accounting underflowed on cleanup removal: current={} removed={removed}; clamping to 0 before reconciling against the scanned size",
+                mg.size
+            );
+            0
+        };
         let stored = mg.size;
 
         let (inflight_add, inflight_sub) = mg.inflight_net();
@@ -1428,6 +1440,19 @@ mod tests {
         let r = quota.subtract_and_reconcile(tmp_bytes_removed, b(50), window);
         assert_eq!(r.stored, b(50), "released once");
         assert_eq!(r.difference, b(0), "nothing to repair");
+    }
+
+    /// Cleanup removing more than the quota accounted is accounting drift,
+    /// counted like `Accounting::subtract`'s underflow, then repaired.
+    #[test]
+    fn reconcile_counts_a_removal_underflow_as_corruption() {
+        let quota = CacheQuota::new(b(50), Some(nz(1000)));
+        let window = quota.begin_reconcile_window();
+        let corruption = metrics::CACHE_SIZE_CORRUPTION.get();
+        let r = quota.subtract_and_reconcile(b(60), b(10), window);
+        assert_eq!(metrics::CACHE_SIZE_CORRUPTION.get(), corruption + 1);
+        assert_eq!(r.stored, b(0), "clamped");
+        assert_eq!(quota.current_size(), b(10), "repaired by the reconcile");
     }
 
     #[test]
