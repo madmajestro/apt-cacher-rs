@@ -23,6 +23,9 @@ pub(super) enum Verdict {
     /// classified it. Counted as `CACHE_NON_REGULAR` here; the caller retains
     /// the entry without verifying it.
     NonRegular,
+    /// The file is gone (removed since the scan listed it); nothing to
+    /// verify, and not an I/O failure.
+    Vanished,
     /// Open/read failed; cleanup leaves the file alone.
     IoError(std::io::Error),
 }
@@ -34,6 +37,7 @@ fn verify_file_sync(path: &Path, algo: HashAlgo, expected: &[u8]) -> Verdict {
 
     let mut file = match nofollow_nonblock_options().read(true).open(path) {
         Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Verdict::Vanished,
         // A symlink swapped in since the scan: `O_NOFOLLOW` refuses it.
         Err(err) if is_non_regular_errno(&err) => {
             metrics::CACHE_NON_REGULAR.increment();
@@ -200,14 +204,18 @@ mod tests {
         ));
     }
 
+    /// A file removed since the scan is a vanished entry: not an I/O
+    /// failure, and counted nowhere.
     #[test]
-    fn verify_file_sync_io_error_on_missing_path() {
+    fn verify_file_sync_reports_a_missing_path_as_vanished() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does_not_exist");
+        let io_failure = metrics::CACHE_IO_FAILURE.get();
         assert!(matches!(
             verify_file_sync(&missing, HashAlgo::Sha256, &[0u8; 32]),
-            Verdict::IoError(_)
+            Verdict::Vanished
         ));
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure);
     }
 
     /// A symlink swapped in since the scan is refused by `O_NOFOLLOW`: a

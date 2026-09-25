@@ -157,6 +157,16 @@ pub(super) async fn sweep_candidates(
                 );
                 None
             }
+            // Listed by the scan, removed since (a download replacing it,
+            // another cleanup unit): not an I/O failure (`cache_walk`'s
+            // vanished-entry rule).
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                debug!(
+                    "Cache entry `{}` vanished before it could be inspected; skipping it",
+                    path.display()
+                );
+                None
+            }
             Err(err) => {
                 metrics::CACHE_IO_FAILURE.increment();
                 error!(
@@ -433,6 +443,42 @@ mod tests {
             uncovered.exists(),
             "uncovered kept: 100d age < 200d uncovered span"
         );
+    }
+
+    /// A candidate removed since the scan listed it is a vanished entry:
+    /// skipped, and not a cache I/O failure.
+    #[tokio::test]
+    async fn sweep_candidates_skips_a_vanished_candidate_uncounted() {
+        use hashbrown::HashMap;
+
+        use std::ffi::OsString;
+
+        use super::{SpanTable, sweep_candidates};
+        use crate::cleanup::engine::SpanClass;
+        use crate::metrics;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let candidates: HashMap<OsString, SpanClass> =
+            [(OsString::from("gone_1.0_amd64.deb"), SpanClass::Deb)]
+                .into_iter()
+                .collect();
+        let spans = SpanTable {
+            deb: Duration::ZERO,
+            byhash_covered: Duration::ZERO,
+            byhash_uncovered: Duration::ZERO,
+        };
+        let io_failure = metrics::CACHE_IO_FAILURE.get();
+        let res = sweep_candidates(
+            dir.path(),
+            &candidates,
+            spans,
+            SystemTime::now(),
+            &test_mirror(),
+            CacheLayout::StructuredPool,
+        )
+        .await;
+        assert_eq!(res.files_removed, 0);
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure);
     }
 
     #[tokio::test]

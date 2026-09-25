@@ -257,6 +257,12 @@ async fn process_stanza(
                 ctx.tally.record_mismatch(pre_size);
             }
         }
+        Verdict::Vanished => {
+            debug!(
+                "Cache entry `{}` vanished before it could be verified; skipping it",
+                path.display(),
+            );
+        }
         Verdict::Raced => {
             warn!(
                 "Cache file `{}` changed during {} verification; retaining (concurrent re-cache)",

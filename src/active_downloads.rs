@@ -257,7 +257,8 @@ pub(crate) enum JoinFailure {
     /// Still `Init` after the writer signalled - a logic error.
     StateCorrupted,
     /// Opening the file failed (`CACHE_IO_FAILURE` or `CACHE_NON_REGULAR`
-    /// bumped).
+    /// bumped), or the file vanished before it could be opened (counted
+    /// nowhere: a concurrent removal).
     CacheAccess,
 }
 
@@ -337,6 +338,17 @@ pub(crate) async fn await_serveable(
             .open(path)
             .await
             .inspect_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    // Removed since it was published (cleanup evicting a
+                    // finished file): a concurrent removal, not an I/O
+                    // failure, so it counts nothing.
+                    info!(
+                        "The {what} file `{}` vanished before joining client {} could open it; returning 500",
+                        path.display(),
+                        conn_details.client,
+                    );
+                    return;
+                }
                 count_cache_failure(err);
                 error!(
                     "Failed to open {what} file `{}` for joining client {}; returning 500:  {}",
