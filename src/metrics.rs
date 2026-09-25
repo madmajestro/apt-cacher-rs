@@ -225,9 +225,12 @@ pub(crate) static TUNNEL_REJECTED_POLICY: Counter = Counter::new();
 pub(crate) static TUNNEL_REJECTED_CAPACITY: Counter = Counter::new();
 /// Post-acceptance tunnel failures: the CONNECT was accepted (counted in
 /// `TUNNEL_CONNECTS_TOTAL`) but the tunnel did not complete cleanly.
-/// Covers HTTP-upgrade failure, upstream TCP connect failure / timeout,
-/// and mid-transfer errors from `copy_bidirectional_with_sizes`. Climbing
-/// values point to flaky upstream tunnels or aborted clients.
+/// Covers hyper's HTTP-upgrade failure and the sendfile backend's failed
+/// `200 Connection Established` write (the same event: the client is gone
+/// before the relay starts), upstream TCP connect failure / timeout, a
+/// failed forward of pipelined client bytes, and mid-transfer errors from
+/// `copy_bidirectional_with_sizes`. Climbing values point to flaky
+/// upstream tunnels or aborted clients.
 pub(crate) static TUNNEL_TRANSFER_FAILED: Counter = Counter::new();
 /// Established tunnels torn down because neither side sent a byte for
 /// `client_idle_timeout`.  Not a failure: a parked CONNECT socket is
@@ -503,18 +506,18 @@ pub(crate) static CACHE_DIRECTORY_UNEXPECTED: Counter = Counter::new();
 /// directory-shaped counterpart inside mirror subtrees).
 pub(crate) static CACHE_UNEXPECTED_REGULAR: Counter = Counter::new();
 
-/// Bytes copied client → upstream through the CONNECT tunnel.
+/// Bytes copied client → upstream through the CONNECT tunnel, including a
+/// payload pipelined behind the `CONNECT` head (a TLS `ClientHello`).
 ///
-/// Counts are recorded only when the tunnel terminates cleanly:
-/// `tokio::io::copy_bidirectional_with_sizes` returns the per-direction
-/// totals as a tuple on success, but on error it discards them. Tunnels
-/// that fail mid-transfer are therefore not reflected in this counter.
+/// Counted on the client side as the relay moves them
+/// (`connect_tunnel::copy_bidirectional_idle`) and published when the tunnel
+/// ends, however it ends: cleanly, idle-closed or failed. After a transfer
+/// error it may include up to one buffer read from the client but never
+/// delivered upstream.
 pub(crate) static BYTES_TUNNELED_CLIENT_TO_UPSTREAM: Accumulator = Accumulator::new();
-/// Bytes copied upstream → client through the CONNECT tunnel.
-///
-/// Same caveat as `BYTES_TUNNELED_CLIENT_TO_UPSTREAM`: only successfully
-/// terminated tunnels contribute; bytes transferred before an error are
-/// unobservable through `copy_bidirectional_with_sizes`'s API.
+/// Bytes copied upstream → client through the CONNECT tunnel; counted and
+/// published like `BYTES_TUNNELED_CLIENT_TO_UPSTREAM` (bytes the client
+/// socket accepted), whichever way the tunnel ends.
 pub(crate) static BYTES_TUNNELED_UPSTREAM_TO_CLIENT: Accumulator = Accumulator::new();
 
 /// HTTP timeout firings: upstream read (response headers and body).

@@ -969,6 +969,9 @@ async fn run_connect_tunnel(
         )
         .await
     {
+        // The accepted tunnel failed before relaying, like hyper's failed
+        // upgrade after its `200`.
+        metrics::TUNNEL_TRANSFER_FAILED.increment();
         info_or_warn!(
             is_expected_client_end(&err),
             "Failed to send tunnel established response to client {client}; tearing down the tunnel:  {}",
@@ -981,8 +984,9 @@ async fn run_connect_tunnel(
 
     // Flush any client bytes already buffered past the CONNECT header (a
     // pipelined TLS ClientHello); dropping them would stall the handshake.
-    if next_header_index < buf.len()
-        && let Err(err) = upstream.write_all(&buf[next_header_index..]).await
+    let pipelined = &buf[next_header_index.min(buf.len())..];
+    if !pipelined.is_empty()
+        && let Err(err) = upstream.write_all(pipelined).await
     {
         metrics::TUNNEL_TRANSFER_FAILED.increment();
         warn_once_or_info!(
@@ -993,13 +997,15 @@ async fn run_connect_tunnel(
     }
 
     let start = PreciseInstant::now();
-    let outcome = copy_bidirectional_idle(
+    let mut outcome = copy_bidirectional_idle(
         stream,
         &mut upstream,
         config.buffer_size,
         config.client_idle_timeout,
     )
     .await;
+    // The pipelined bytes crossed the tunnel too, ahead of the relay.
+    outcome.from_client += pipelined.len() as u64;
     report_tunnel_outcome(&outcome, &client, &host, port, start.elapsed());
 }
 

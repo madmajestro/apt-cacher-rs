@@ -145,20 +145,34 @@ pub(crate) enum TunnelCopyError {
     Io(std::io::Error),
 }
 
+/// How a tunnel relay ended, with the bytes that crossed it either way --
+/// counted on the client side as they move, so a tunnel that ends idle or
+/// failed reports its traffic too, not only one that closed cleanly.
+#[derive(Debug)]
+pub(crate) struct TunnelOutcome {
+    /// Bytes read from the client for the upstream, plus any the backend
+    /// forwarded itself before the relay started (see `run_connect_tunnel`).
+    pub(crate) from_client: u64,
+    /// Bytes written to the client from the upstream.
+    pub(crate) from_server: u64,
+    pub(crate) end: Result<(), TunnelCopyError>,
+}
+
 /// Relay `client` and `upstream` into each other until one side closes or
-/// the tunnel sits idle for `idle_timeout`.  Returns the bytes copied
-/// client->upstream and upstream->client on a clean close.
+/// the tunnel sits idle for `idle_timeout`, and return how it ended with the
+/// bytes moved each way.
 ///
 /// The idle watchdog cancels `copy_bidirectional` only after a full
 /// `idle_timeout` without progress, so no in-flight buffered bytes are lost:
 /// by construction the copy loop has been parked on both `poll_read`s for
-/// that long.
+/// that long. After a transfer error, `from_client` may include one
+/// buffer's worth read from the client but never delivered upstream.
 pub(crate) async fn copy_bidirectional_idle<C, U>(
     client: C,
     upstream: &mut U,
     buf_size: usize,
     idle_timeout: Duration,
-) -> Result<(u64, u64), TunnelCopyError>
+) -> TunnelOutcome
 where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
@@ -167,6 +181,8 @@ where
     let mut client = IdleTracked {
         inner: client,
         activity: Arc::clone(&activity),
+        read: 0,
+        written: 0,
     };
 
     let watchdog = async {
@@ -179,28 +195,39 @@ where
         }
     };
 
-    tokio::select! {
+    let end = tokio::select! {
         copied = tokio::io::copy_bidirectional_with_sizes(&mut client, upstream, buf_size, buf_size) => {
-            copied.map_err(TunnelCopyError::Io)
+            copied.map(|(_to_upstream, _to_client)| ()).map_err(TunnelCopyError::Io)
         }
         idle = watchdog => Err(idle),
+    };
+    TunnelOutcome {
+        from_client: client.read,
+        from_server: client.written,
+        end,
     }
 }
 
 /// Log the outcome of a finished tunnel relay and bump its metrics.  Shared
 /// by both backends so an idle close, a peer close and a transfer failure
-/// carry the same wording and counters everywhere.
+/// carry the same wording and counters everywhere; the bytes that crossed
+/// count whichever way the tunnel ended.
 pub(crate) fn report_tunnel_outcome(
-    outcome: &Result<(u64, u64), TunnelCopyError>,
+    outcome: &TunnelOutcome,
     client: &ClientInfo,
     host: &str,
     port: NonZero<u16>,
     elapsed: Duration,
 ) {
-    match outcome {
-        Ok((from_client, from_server)) => {
-            metrics::BYTES_TUNNELED_CLIENT_TO_UPSTREAM.increment_by(*from_client);
-            metrics::BYTES_TUNNELED_UPSTREAM_TO_CLIENT.increment_by(*from_server);
+    let TunnelOutcome {
+        from_client,
+        from_server,
+        end,
+    } = outcome;
+    metrics::BYTES_TUNNELED_CLIENT_TO_UPSTREAM.increment_by(*from_client);
+    metrics::BYTES_TUNNELED_UPSTREAM_TO_CLIENT.increment_by(*from_server);
+    match end {
+        Ok(()) => {
             info!(
                 "Tunneled client {client} wrote {} and received {} from {host}:{port} in {}",
                 HumanFmt::Size(*from_client),
@@ -269,12 +296,16 @@ impl ActivityClock {
 }
 
 /// Stream wrapper stamping [`ActivityClock`] on every successful read or
-/// write.  Wrapping the client side alone sees both directions: bytes from
-/// the upstream are written *to* the client, bytes from the client are read
-/// *from* it.
+/// write, and counting the bytes.  Wrapping the client side alone sees both
+/// directions: bytes from the upstream are written *to* the client, bytes
+/// from the client are read *from* it.
 struct IdleTracked<S> {
     inner: S,
     activity: Arc<ActivityClock>,
+    /// Bytes read from the client (headed upstream).
+    read: u64,
+    /// Bytes written to the client (from the upstream).
+    written: u64,
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for IdleTracked<S> {
@@ -287,6 +318,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for IdleTracked<S> {
         let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
         if matches!(polled, Poll::Ready(Ok(()))) && buf.filled().len() > before {
             self.activity.touch();
+            self.read += (buf.filled().len() - before) as u64;
         }
         polled
     }
@@ -299,8 +331,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for IdleTracked<S> {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let polled = Pin::new(&mut self.inner).poll_write(cx, buf);
-        if matches!(polled, Poll::Ready(Ok(n)) if n > 0) {
+        if let Poll::Ready(Ok(n)) = polled
+            && n > 0
+        {
             self.activity.touch();
+            self.written += n as u64;
         }
         polled
     }

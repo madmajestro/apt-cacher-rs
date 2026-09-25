@@ -736,12 +736,12 @@ fn build_tunnels_group(g: &mut Groups) {
         );
         t.row_tip(
             "Bytes (client \u{2192} upstream)",
-            "Bytes copied client-to-upstream through completed tunnels. Only counted when the tunnel exits cleanly.",
+            "Bytes copied client-to-upstream through tunnels, however the tunnel ended (cleanly, idle-closed or failed), including bytes pipelined behind the CONNECT request.",
             HumanFmt::Size(metrics::BYTES_TUNNELED_CLIENT_TO_UPSTREAM.get()),
         );
         t.row_tip(
             "Bytes (upstream \u{2192} client)",
-            "Bytes copied upstream-to-client through completed tunnels. Only counted when the tunnel exits cleanly.",
+            "Bytes copied upstream-to-client through tunnels, however the tunnel ended (cleanly, idle-closed or failed).",
             HumanFmt::Size(metrics::BYTES_TUNNELED_UPSTREAM_TO_CLIENT.get()),
         );
         t.row_tip(
@@ -756,7 +756,7 @@ fn build_tunnels_group(g: &mut Groups) {
         );
         t.row_tip(
             "Transfer Failures",
-            "Post-acceptance tunnel failures: HTTP upgrade failure, upstream connect failure or timeout, or mid-transfer error. Counts tunnels that were accepted but did not complete cleanly.",
+            "Post-acceptance tunnel failures: the client gone before the relay started (HTTP upgrade or `200` write failure), upstream connect failure or timeout, or mid-transfer error. Counts tunnels that were accepted but did not complete cleanly.",
             WarnNonzero(metrics::TUNNEL_TRANSFER_FAILED.get()),
         );
         t.row_tip(
