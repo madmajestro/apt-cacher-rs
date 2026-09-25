@@ -356,7 +356,7 @@ fn build_cache_group(g: &mut Groups) {
         );
         t.row_tip(
             "Volatile Refetches",
-            "Volatile resources revalidated against upstream. Warns only on the impossible direction: the two outcome counters beside it cover the stale-but-present case only, so a refetch total below their sum is a counting bug.",
+            "Volatile requests (indexes) that found no fresh cached copy and needed upstream, whether they fetched it or joined an in-flight fetch. Warns only on the impossible direction: the two outcome counters beside it cover the stale-but-present case only, so a refetch total below their sum is a counting bug.",
             // Subset invariant: UPTODATE + OUTOFDATE only count the
             // stale-but-present case; the volatile-not-found case bumps
             // REFETCHED without either subset, so REFETCHED >= sum is the

@@ -153,11 +153,15 @@ pub(crate) static CLIENT_STATUS_416: Counter = Counter::new();
 /// Volatile-resource hit served from cache within `VOLATILE_CACHE_MAX_AGE`.
 /// Ratio against `VOLATILE_REFETCHED` indicates whether max-age is well-tuned.
 pub(crate) static VOLATILE_HIT: Counter = Counter::new();
-/// Volatile-resource fetch from upstream (stale on disk or absent).
-/// Mutually exclusive with `CACHE_MISSES` (which counts permanent files only).
+/// Volatile-resource request that found no fresh file (stale on disk or
+/// absent), so it needed upstream: it either fetched itself or joined the
+/// in-flight fetch (a late joiner, also in `LATE_JOINERS_TOTAL`) -- the
+/// volatile counterpart of `CACHE_MISSES`, which counts permanent files
+/// only. `VOLATILE_HIT + VOLATILE_REFETCHED` is every volatile lookup.
 /// `VOLATILE_REFETCHED_UPTODATE` and `VOLATILE_REFETCHED_OUTOFDATE` are
-/// subsets covering the stale-but-present case; the volatile-not-found
-/// case bumps neither sub-bucket, so their sum is less than or equal to
+/// subsets bumped by the fetching request only, covering the
+/// stale-but-present case; the volatile-not-found case and joiners bump
+/// neither sub-bucket, so their sum is less than or equal to
 /// `VOLATILE_REFETCHED`.
 pub(crate) static VOLATILE_REFETCHED: Counter = Counter::new();
 /// Subset of `VOLATILE_REFETCHED`: stale-but-present, upstream returned 304.
@@ -340,10 +344,10 @@ pub(crate) static PIPE_RESIZE_REFUSED: Counter = Counter::new();
 pub(crate) static BYTES_DOWNLOADED_UPSTREAM: Accumulator = Accumulator::new();
 
 /// Requests that attached to an in-flight download instead of fetching anew.
-/// High values relative to `CACHE_MISSES` mean coalescing carries real traffic.
-/// Late joiners on a permanent resource are counted as `CACHE_MISSES`; late
-/// joiners on a volatile resource bump only this counter and the originator's
-/// `VOLATILE_REFETCHED`, not the per-request {hit, miss} buckets.
+/// High values relative to `CACHE_MISSES + VOLATILE_REFETCHED` mean
+/// coalescing carries real traffic. Every late joiner is also counted in its
+/// flavor's miss bucket: `CACHE_MISSES` for a permanent resource,
+/// `VOLATILE_REFETCHED` for a volatile one.
 pub(crate) static LATE_JOINERS_TOTAL: Counter = Counter::new();
 /// Peak concurrent late joiners attached to a single in-flight download.
 pub(crate) static LATE_JOINER_PEAK_PER_DOWNLOAD: Peak = Peak::new();

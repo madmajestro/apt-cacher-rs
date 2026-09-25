@@ -1238,14 +1238,14 @@ async fn try_sendfile_request(
     // status travels to hyper in the `NotApplicable` plan, so the joiner is
     // never registered twice.
     if let Some(dl_status) = appstate.active_downloads.attach(conn_details.key()) {
-        // Coalesced permanent late-joiners count as `CACHE_MISSES`: the file
-        // was not yet fully on disk so we would have fetched upstream if not
-        // for the in-flight originator. `LATE_JOINERS_TOTAL` is the subset of
-        // misses that attached; `attach()` already bumped that counter. The
-        // volatile case is accounted for via `VOLATILE_REFETCHED` by the
-        // originator.
-        if conn_details.cached_flavor() == CachedFlavor::Permanent {
-            metrics::CACHE_MISSES.increment();
+        // Late joiners count like any request of their flavor that found no
+        // usable file: the file was not yet fully on disk, so we would have
+        // fetched upstream if not for the in-flight originator.
+        // `LATE_JOINERS_TOTAL` is the subset that attached; `attach()`
+        // already bumped that counter.
+        match conn_details.cached_flavor() {
+            CachedFlavor::Permanent => metrics::CACHE_MISSES.increment(),
+            CachedFlavor::Volatile => metrics::VOLATILE_REFETCHED.increment(),
         }
 
         return serve_unfinished_sendfile(
