@@ -994,9 +994,6 @@ async fn relay_passthrough(
             .map(|()| client.action);
     }
 
-    metrics::REQUESTS_PASSTHROUGH.increment();
-    metrics::record_client_status(upstream_resp.status_code);
-
     // Rewrite the response headers before forwarding: strip hop-by-hop
     // headers, emit a single `Connection:` matching our keep-alive
     // decision (a body relayed close-delimited overrides it), announce the
@@ -1027,6 +1024,10 @@ async fn relay_passthrough(
             return Err(SpliceProxyError::Upstream(reported));
         }
     };
+    // Counted only now: a failed rewrite above answers 502 through the outer
+    // arm, which records that status itself.
+    metrics::REQUESTS_PASSTHROUGH.increment();
+    metrics::record_client_status(upstream_resp.status_code);
     write_all_to_stream(
         client.stream,
         passthrough_headers.as_bytes(),
