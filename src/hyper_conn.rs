@@ -318,6 +318,12 @@ pub(crate) async fn request_with_retry(
     let orig_scheme = parts.uri.scheme().cloned();
 
     let mut probe = UpgradeProbe::NotProbing;
+    // Whether the scheme came from `scheme_cache::resolve`. One the target
+    // fixed (an `https://` URL, a redirect `Location` naming it) decides
+    // nothing, so the loop leaves the scheme cache alone for it, as splice
+    // does for its `scheme_override`: remembering it would let one redirect
+    // override `http_only_mirrors` / `https_upgrade_mode` for the host.
+    let mut scheme_decided = false;
 
     if let Some(os) = &orig_scheme
         && *os != http::uri::Scheme::HTTP
@@ -353,6 +359,7 @@ pub(crate) async fn request_with_retry(
             metrics::HTTPS_UPGRADE_ATTEMPTED.increment();
         }
         probe = upgrade;
+        scheme_decided = true;
     }
 
     #[expect(
@@ -364,6 +371,7 @@ pub(crate) async fn request_with_retry(
         mut parts: http::request::Parts,
         orig_scheme: Option<http::uri::Scheme>,
         mut probe: UpgradeProbe,
+        scheme_decided: bool,
     ) -> Result<(Response<Incoming>, http::request::Parts), RequestFailure> {
         let mut backoff = upstream_retry::Backoff::new(
             global_config().upstream_retry_budget,
@@ -378,7 +386,7 @@ pub(crate) async fn request_with_retry(
                     if probe.is_probing() {
                         metrics::HTTPS_UPGRADE_SUCCEEDED.increment();
                     }
-                    if let Some(auth) = parts.uri.authority() {
+                    if scheme_decided && let Some(auth) = parts.uri.authority() {
                         if let Some(scheme) = parts.uri.scheme().and_then(Scheme::from_uri_scheme) {
                             if scheme_cache::record_success(auth.into(), scheme) {
                                 debug!(
@@ -524,7 +532,8 @@ pub(crate) async fn request_with_retry(
                                     )
                                 );
                             }
-                        } else if let Some(auth) = parts.uri.authority()
+                        } else if scheme_decided
+                            && let Some(auth) = parts.uri.authority()
                             && let Some(scheme) = scheme_cache::record_failure(auth.into())
                         {
                             // A learned scheme is sticky, so losing it silently
@@ -573,7 +582,7 @@ pub(crate) async fn request_with_retry(
         // Spawn a new task such that even if the client disconnects,
         // the task will continue to run and initialize the scheme cache.
         tokio::task::spawn(async move {
-            let result = inner_loop(&client, parts, orig_scheme, probe).await;
+            let result = inner_loop(&client, parts, orig_scheme, probe, scheme_decided).await;
             if let Err(ref err) = result {
                 // The caller owns the terminal failure report. This background
                 // task only records scheme initialization context.
@@ -590,7 +599,14 @@ pub(crate) async fn request_with_retry(
         .await
         .expect("task should not panic")
     } else {
-        inner_loop(client, parts, orig_scheme, UpgradeProbe::NotProbing).await
+        inner_loop(
+            client,
+            parts,
+            orig_scheme,
+            UpgradeProbe::NotProbing,
+            scheme_decided,
+        )
+        .await
     }
 }
 
