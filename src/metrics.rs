@@ -408,7 +408,8 @@ pub(crate) static CACHE_HITS: Counter = Counter::new();
 pub(crate) static CACHE_MISSES: Counter = Counter::new();
 
 /// Per-delivery-mechanism triples. For each mechanism `X`, `REQUESTS_X`
-/// counts responses that started down that path, `SERVED_X` the subset that
+/// counts responses that started down that path (bumped before the
+/// response head is written, so a failed head write counts as started), `SERVED_X` the subset that
 /// completed, and `BYTES_SERVED_X` (above) their bytes. `SERVED_TOTAL` is the
 /// sum of the `SERVED_X` plus `SERVED_WEBUI`.
 pub(crate) static REQUESTS_SENDFILE: Counter = Counter::new();

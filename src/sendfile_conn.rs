@@ -1666,6 +1666,10 @@ pub(crate) async fn serve_file_via_sendfile(
     // kernel coalesces them with the first sendfile body bytes — no
     // TCP_CORK setsockopt pair needed.
 
+    // The response starts down this path with its head, as `REQUESTS_SPLICE`
+    // and hyper's `REQUESTS_*` count it: a failed head write is a request
+    // that started and did not complete.
+    metrics::REQUESTS_SENDFILE.increment();
     if let Err(err) = write_response_headers(
         stream,
         conn_version,
@@ -1683,7 +1687,6 @@ pub(crate) async fn serve_file_via_sendfile(
     let start = PreciseInstant::now();
 
     // Use sendfile(2) to transfer the file body
-    metrics::REQUESTS_SENDFILE.increment();
     let transfer_result = async_sendfile(stream, &file, content_start, content_length).await;
 
     if finish_sendfile_serve(
@@ -2677,6 +2680,9 @@ async fn serve_unfinished_sendfile(
     // Headers go out with MSG_MORE (see write_response_headers); the first
     // sendfile body bytes complete the held segment — no TCP_CORK pair.
 
+    // Counted when the response starts, before its head (see
+    // `serve_file_via_sendfile`'s bump).
+    metrics::REQUESTS_SENDFILE.increment();
     if let Err(err) = write_response_headers(
         stream,
         conn_version,
@@ -2697,8 +2703,6 @@ async fn serve_unfinished_sendfile(
     }
 
     let start = PreciseInstant::now();
-
-    metrics::REQUESTS_SENDFILE.increment();
 
     let transfer_result = async_sendfile_unfinished(
         stream,
