@@ -11,7 +11,7 @@ use crate::cache_walk::{
 };
 use crate::database::OriginEntry;
 use crate::error::ErrorReport;
-use crate::fs_open::probe_dir;
+use crate::fs_open::{count_cache_failure, probe_dir};
 use crate::index_parser::{ByHashRef, HashAlgo, hex_decode_exact, parse_release_byhash_digests};
 use crate::integrity::read_release_to_string;
 use crate::metrics;
@@ -146,7 +146,13 @@ pub(super) async fn build_byhash_reference_set(
                 // Conservative: an unreadable or truncated Release means the
                 // reference set would be incomplete, so abandon reference mode
                 // for the whole directory and fall back to age-based retention.
-                metrics::CACHE_IO_FAILURE.increment();
+                // Only a failed syscall counts, in the counter its errno
+                // belongs to: an oversized or non-UTF-8 Release (an errno-less
+                // `InvalidData` from the reader) is a content problem, and one
+                // removed since the walk listed it is a concurrent removal.
+                if err.raw_os_error().is_some() && err.kind() != std::io::ErrorKind::NotFound {
+                    count_cache_failure(&err);
+                }
                 warn!(
                     "Failed to read Release file `{}` for by-hash reconciliation; falling back to age-based retention:  {}",
                     path.display(),
@@ -453,6 +459,21 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    /// A Release whose content cannot be read as text bails like an
+    /// unreadable one, but it is a content problem, not a failed syscall.
+    #[tokio::test]
+    async fn build_reference_set_bails_on_a_non_utf8_release_uncounted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("sid_InRelease"), [0xff, 0xfe, 0xfd]).expect("write");
+        let io_failure = metrics::CACHE_IO_FAILURE.get();
+        assert!(
+            build_byhash_reference_set(dir.path(), CacheLayout::DistsByHash, &[])
+                .await
+                .is_none()
+        );
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure);
     }
 
     #[tokio::test]
