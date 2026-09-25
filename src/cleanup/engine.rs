@@ -544,8 +544,10 @@ struct ByHashOutcome {
     /// By-hash files kept: referenced digests (dropped from the candidate map
     /// before the sweep) plus candidates too young for their span.
     retained: u64,
-    /// Total files removed: candidate removals plus removed anomalous entries
-    /// (symlink / FIFO / ... in the by-hash dir).
+    /// By-hash files removed. An anomalous entry (symlink / FIFO / ... in
+    /// the by-hash dir) is unlinked too but not counted here: it was never
+    /// cached content, so it is no eviction -- the walker's
+    /// `CACHE_NON_REGULAR` is its count, as in every other cleanup walk.
     removed: u64,
     /// Subset of `removed` that were unreferenced but algorithm-covered.
     removed_unreferenced: u64,
@@ -614,7 +616,7 @@ async fn run_byhash_unit(
 
     // `scanned = retained + removed` so the derived `files_retained`
     // (`scanned - removed`) equals the kept count, exactly as the old by-hash
-    // task reported it; anomaly removals cancel out of the retained figure.
+    // task reported it; anomaly removals are in neither.
     Ok(UnitStats {
         scanned: outcome.retained + outcome.removed,
         removed: outcome.removed,
@@ -640,8 +642,8 @@ static BYHASH_WALK: WalkContext = WalkContext {
 /// `grace`, counted as `removed_unreferenced`); anything uncovered,
 /// unclassifiable, or in age mode (`reference` is `None`) stays `ByHashUncovered`
 /// (swept past `backstop`). A symlink / FIFO / socket / device is unlinked
-/// inline and counts toward `removed`; a stray directory is reported and
-/// retained. Removal, metadata invalidation, future-timestamp and I/O-error
+/// inline without counting toward `removed` (no eviction, see
+/// [`ByHashOutcome::removed`]); a stray directory is reported and retained. Removal, metadata invalidation, future-timestamp and I/O-error
 /// handling all flow through [`sweep_candidates`].
 ///
 /// `NotFound` is treated as "nothing to do" (TOCTOU: the caller pre-probes with
@@ -656,7 +658,6 @@ async fn sweep_byhash_dir(
     layout: CacheLayout,
 ) -> Result<ByHashOutcome, CleanupUnitError> {
     let mut candidates: HashMap<OsString, SpanClass> = HashMap::new();
-    let mut anomaly_removed = 0u64;
     let mut referenced_kept = 0u64;
 
     let mut walker = Walker::new(byhash_path, &BYHASH_WALK, OnMissing::Tolerate, ());
@@ -664,9 +665,7 @@ async fn sweep_byhash_dir(
     while let Some(entry) = walker.next().await {
         match entry.kind() {
             EntryKind::NonRegular => {
-                if remove_non_regular(&entry.path()).await {
-                    anomaly_removed += 1;
-                }
+                remove_non_regular(&entry.path()).await;
                 continue;
             }
             EntryKind::Dir => {
@@ -726,7 +725,7 @@ async fn sweep_byhash_dir(
         // Referenced keeps + candidates the sweep left in place (too young / I/O
         // skipped); anomaly removals never count as retained.
         retained: referenced_kept + survivors.saturating_sub(swept.files_removed),
-        removed: swept.files_removed + anomaly_removed,
+        removed: swept.files_removed,
         removed_unreferenced: swept.removed_unreferenced,
         bytes_removed: swept.bytes_removed,
     })
@@ -1559,6 +1558,32 @@ mod tests {
         assert_eq!(outcome.removed_unreferenced, 2);
         assert!(dir.path().join(hex_encode(&referenced)).exists());
         assert!(!dir.path().join(hex_encode(&unref_a)).exists());
+    }
+
+    /// A symlink in a by-hash directory is unlinked, but it was no cached
+    /// file: it counts in neither `removed` nor `retained`.
+    #[tokio::test]
+    async fn byhash_sweep_does_not_count_a_removed_symlink_as_eviction() {
+        ensure_metadata_store();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let link = dir.path().join(hex_encode(&[0x0au8; 32]));
+        std::os::unix::fs::symlink("/nonexistent", &link).expect("symlink");
+
+        let outcome = sweep_byhash_dir(
+            dir.path(),
+            None,
+            Duration::from_secs(3 * DAY),
+            Duration::from_secs(90 * DAY),
+            SystemTime::now(),
+            &byhash_test_mirror(),
+            CacheLayout::DistsByHash,
+        )
+        .await
+        .expect("sweep ok");
+
+        assert!(link.symlink_metadata().is_err(), "the symlink is unlinked");
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.retained, 0);
     }
 
     #[tokio::test]
