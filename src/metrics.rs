@@ -590,8 +590,11 @@ pub(crate) static PASSTHROUGH_REJECTED_CAP: Counter = Counter::new();
 /// every admission (capped or not).
 pub(crate) static PASSTHROUGH_ACTIVE_PEAK: Peak = Peak::new();
 
-/// Upstream connect attempts past the first, bumped by
-/// `upstream_retry::Backoff::next_retry` for both backends.
+/// Upstream connect attempts past a request's first, in both backends:
+/// every backoff retry (`upstream_retry::Backoff::next_retry`) and every
+/// Auto-mode dial of the original scheme after a failed HTTPS probe
+/// (hyper's revert iteration, splice's fallback dial in
+/// `connect_upstream`).
 pub(crate) static UPSTREAM_RETRIES: Counter = Counter::new();
 
 /// Log-ring evictions due to overflow (raise `logstore_capacity` if non-zero).

@@ -1,8 +1,10 @@
 //! Shared upstream connect-retry policy: the attempt budget, the wall-clock
 //! budget, the Fibonacci backoff schedule and the `UPSTREAM_RETRIES` accounting
-//! used by both the hyper (`request_with_retry`) and splice
-//! (`standard_upstream_connect`) backends. The retry *control flow* stays
-//! backend-specific; only this policy is shared.
+//! of backoff retries, used by both the hyper (`request_with_retry`) and
+//! splice (`standard_upstream_connect`) backends. The retry *control flow*
+//! stays backend-specific; only this policy is shared. The Auto-mode dial of
+//! the original scheme is an attempt too, counted by each backend where it
+//! dials.
 
 use std::fmt;
 use std::time::Duration;

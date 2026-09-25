@@ -573,7 +573,7 @@ fn build_upstream_group(g: &mut Groups) {
         t.row("308 Permanent Redirect", status_308);
         t.row_tip(
             "Retries",
-            "Upstream requests retried after a transient failure.",
+            "Upstream connect attempts past a request's first: backoff retries after a failed connect, and Auto-mode dials of plain HTTP after a failed HTTPS probe.",
             metrics::UPSTREAM_RETRIES.get(),
         );
         t.row_tip(

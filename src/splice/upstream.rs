@@ -715,6 +715,9 @@ pub(super) async fn connect_upstream(
                 }
             }
 
+            // The fallback dial is another connect attempt, counted like
+            // hyper's Auto-mode revert iteration.
+            metrics::UPSTREAM_RETRIES.increment();
             let tcp = tcp_connect(host, mirror_port(mirror, false))
                 .await
                 .map_err(ConnectError::transient)?;
