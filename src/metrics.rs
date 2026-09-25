@@ -367,7 +367,9 @@ pub(crate) static BYTES_DOWNLOADED_UPSTREAM: Accumulator = Accumulator::new();
 /// flavor's miss bucket: `CACHE_MISSES` for a permanent resource,
 /// `VOLATILE_REFETCHED` for a volatile one.
 pub(crate) static LATE_JOINERS_TOTAL: Counter = Counter::new();
-/// Peak concurrent late joiners attached to a single in-flight download.
+/// Most late joiners any single download has had: the entry's joiner count
+/// only grows while the download lives (a joiner that leaves early is not
+/// subtracted), so this is joiners per download, not joiners at once.
 pub(crate) static LATE_JOINER_PEAK_PER_DOWNLOAD: Peak = Peak::new();
 
 /// Splice upstream pool: connection reused / opened fresh.

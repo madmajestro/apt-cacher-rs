@@ -503,8 +503,8 @@ fn build_delivery_group(g: &mut Groups) {
             metrics::LATE_JOINERS_TOTAL.get(),
         );
         t.row_tip(
-            "Late Joiner Peak per Download",
-            "Peak number of concurrent late joiners observed on a single download.",
+            "Most Late Joiners on One Download",
+            "The most late joiners any single download has had since startup, counting every client that joined it, including those that left before it finished.",
             metrics::LATE_JOINER_PEAK_PER_DOWNLOAD.get(),
         );
     });

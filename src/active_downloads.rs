@@ -529,7 +529,9 @@ fn discarded_join(checksum_mismatch: bool, conn_details: &ConnectionDetails) -> 
 #[derive(Debug)]
 struct ActiveDownloadEntry {
     status: Arc<tokio::sync::RwLock<ActiveDownloadStatus>>,
-    /// Number of late joiners that have attached to this download. Updated
+    /// Number of late joiners that have attached to this download so far;
+    /// only ever grows (a joiner leaving is not subtracted), so the peak it
+    /// feeds is joiners per download, not concurrent joiners. Updated
     /// under `inner`'s write-lock on every late-join insert and on each
     /// `attach()` call.
     late_joiners: usize,
