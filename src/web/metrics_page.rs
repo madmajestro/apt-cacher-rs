@@ -1,6 +1,10 @@
 //! The collapsed Metrics section of the dashboard: every counter in
-//! `metrics.rs`, split into titled subsections with the alert/warn policy
-//! applied per row.
+//! `metrics.rs` except six peak gauges shown next to their live values
+//! elsewhere (`CONNECTED_CLIENTS_PEAK`, `PER_CLIENT_IP_PEAK`,
+//! `ACTIVE_UPSTREAM_DOWNLOADS_PEAK`, `ACTIVE_CLIENT_DOWNLOADS_PEAK` and
+//! `PASSTHROUGH_ACTIVE_PEAK` in Daemon Status, `CACHE_QUOTA_UTIL_PEAK_BPS` in
+//! the disk-usage cell), split into titled subsections with the alert/warn
+//! policy applied per row.
 //!
 //! Two rules keep this readable, because a flat list of ~150 counters (of
 //! which nearly all read zero on a healthy daemon) buries the handful that
@@ -213,7 +217,7 @@ fn build_requests_group(g: &mut Groups) {
         );
         t.row_tip(
             "Unhandled Request Headers",
-            "Requests carrying an HTTP header outside the daemon's known set, on the upstream-relay path. Useful as a first-contact discovery signal; the log line itself is debounced.",
+            "HTTP request headers outside the daemon's known set, counted per header, on requests that start a download in the hyper backend. Useful as a first-contact discovery signal; the log line itself is debounced.",
             WarnNonzero(metrics::UNHANDLED_REQUEST_HEADERS.get()),
         );
         t.row_tip(
@@ -593,7 +597,7 @@ fn build_upstream_group(g: &mut Groups) {
         );
         t.row_tip(
             "Timeouts (connect)",
-            "Configured-timeout firings while connecting to an upstream mirror.",
+            "Configured-timeout firings while connecting to an upstream mirror or a CONNECT tunnel target, counted per connect attempt.",
             metrics::HTTP_TIMEOUT_UPSTREAM_CONNECT.get(),
         );
         t.row_tip(
@@ -618,7 +622,7 @@ fn build_upstream_group(g: &mut Groups) {
         );
         t.row_tip(
             "Downloads Aborted",
-            "Active upstream downloads aborted before completion.",
+            "Upstream downloads that ended without being cached: failed (upstream, cache or internal), cancelled, or discarded by the commit (checksum mismatch, verify or rename failure).",
             metrics::DOWNLOADS_ABORTED.get(),
         );
         t.row_tip(
@@ -751,7 +755,7 @@ fn build_tunnels_group(g: &mut Groups) {
         );
         t.row_tip(
             "Rejected (capacity)",
-            "CONNECT requests refused because the tunnel capacity limit was reached.",
+            "CONNECT requests refused with 429 because their source IP already held `https_tunnel_max_connections_per_client` tunnels.",
             metrics::TUNNEL_REJECTED_CAPACITY.get(),
         );
         t.row_tip(
@@ -935,8 +939,8 @@ fn build_errors_group(g: &mut Groups) {
         );
         t.row_tip(
             "Logstore Evictions",
-            "Important-log ring-buffer evictions due to overflow.",
-            WarnNonzero(metrics::LOGSTORE_EVICTIONS.get()),
+            "Entries dropped from the in-memory log ring once it is full. Normal on a long-running daemon; `logstore_capacity` sizes the ring.",
+            metrics::LOGSTORE_EVICTIONS.get(),
         );
     });
 }

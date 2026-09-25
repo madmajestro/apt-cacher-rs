@@ -13,7 +13,8 @@ use coarsetime::Instant;
 
 use crate::{metrics, sticky};
 
-/// Maximum upstream connect attempts before giving up (both backends).
+/// Maximum upstream connect *retries* before giving up (both backends), so a
+/// request makes at most `MAX_ATTEMPTS + 1` backoff-paced connect attempts.
 /// Enforced by [`Backoff::next_retry`]; exposed only for the cross-module
 /// invariant assert in `hyper_conn.rs`.
 pub(crate) const MAX_ATTEMPTS: u32 = 10;

@@ -51,12 +51,17 @@ impl Peak {
     }
 }
 
-/// Cache-line aligned: accumulators are the per-chunk-bumped byte counters
+/// A counter bumped by an arbitrary amount (`increment_by`). Most are byte
+/// counters; the cleanup and database tallies among them count what their
+/// name says (`CLEANUP_EVICTIONS` and `CLEANUP_BYHASH_UNREFERENCED` files,
+/// `DB_MIRROR_LAST_SEEN_FLUSHED` rows).
+///
+/// Cache-line aligned for the hot ones, the per-chunk byte counters
 /// (`BYTES_SERVED_*`, `BYTES_DOWNLOADED_UPSTREAM`), hit from different
 /// worker threads at chunk granularity. Without the alignment, up to eight
 /// of them share one 64-byte line and every bump bounces it between cores.
-/// There are only ~14 accumulators, so the padding is negligible;
-/// the ~100 request-granularity `Counter`s stay packed on purpose.
+/// There are only 13 accumulators, so the padding is negligible;
+/// the ~125 request-granularity `Counter`s stay packed on purpose.
 #[repr(align(64))]
 pub(crate) struct Accumulator(AtomicU64);
 
@@ -110,9 +115,10 @@ pub(crate) static WEBUI_REQUESTS: Counter = Counter::new();
 /// and `SERVED_TOTAL`).
 pub(crate) static SERVED_WEBUI: Counter = Counter::new();
 /// TCP connections accepted by the listener (counted at `accept()`,
-/// before the ACL and per-IP cap checks). Connections subsequently rejected
-/// by the client ACLs or `max_connections_per_client_ip` are included here
-/// and also counted in `CONNECTION_REJECTED_ACL` or
+/// before the ACL and connection-cap checks). Connections subsequently
+/// rejected by the client ACLs, `max_connections` or
+/// `max_connections_per_client_ip` are included here and also counted in
+/// `CONNECTION_REJECTED_ACL`, `CONNECTION_REJECTED_GLOBAL_CAP` or
 /// `CONNECTION_REJECTED_PER_IP_CAP`.
 pub(crate) static CONNECTIONS_ACCEPTED: Counter = Counter::new();
 /// `accept(2)` failures the listener loop retried instead of stopping the
@@ -225,7 +231,9 @@ pub(crate) static TUNNEL_CONNECTS_TOTAL: Counter = Counter::new();
 /// per-port allowlist. Mirror-allowlist denials are tracked separately as
 /// `AUTHZ_REJECTED_TUNNEL_MIRROR`.
 pub(crate) static TUNNEL_REJECTED_POLICY: Counter = Counter::new();
-/// CONNECT tunnels rejected because the active-tunnel cap was reached.
+/// CONNECT tunnels rejected with 429 because their source IP already held
+/// `https_tunnel_max_connections_per_client` tunnels (a per-IP cap; there
+/// is no global tunnel cap).
 pub(crate) static TUNNEL_REJECTED_CAPACITY: Counter = Counter::new();
 /// Post-acceptance tunnel failures: the CONNECT was accepted (counted in
 /// `TUNNEL_CONNECTS_TOTAL`) but the tunnel did not complete cleanly.
@@ -240,8 +248,11 @@ pub(crate) static TUNNEL_TRANSFER_FAILED: Counter = Counter::new();
 /// `client_idle_timeout`.  Not a failure: a parked CONNECT socket is
 /// reclaimed instead of pinning fds and an upstream connection.
 pub(crate) static TUNNEL_IDLE_CLOSED: Counter = Counter::new();
-/// Peak concurrent CONNECT tunnels (sum across all source IPs).  Use to
-/// validate `https_tunnel_max_connections_per_client` headroom.
+/// Peak concurrent CONNECT tunnels, summed across all source IPs, tracked
+/// whether or not a cap is configured.  A global figure: it cannot show how
+/// close any single IP came to the per-IP cap
+/// `https_tunnel_max_connections_per_client` (see
+/// `TUNNEL_REJECTED_CAPACITY` for that cap's refusals).
 pub(crate) static CONNECT_TUNNEL_ACTIVE_PEAK: Peak = Peak::new();
 
 /// Plain-HTTP connections rejected at accept time because the per-source-IP
@@ -271,13 +282,14 @@ pub(crate) static PROXY_LOOP_REJECTED: Counter = Counter::new();
 /// cap to a comfortable margin above it.
 pub(crate) static PER_CLIENT_IP_PEAK: Peak = Peak::new();
 
-/// Requests that included an HTTP header outside the daemon's known set
-/// (`warn_once_or_info!("Unhandled HTTP header …")`). Each occurrence is
-/// counted; the log entry itself is debounced.
+/// HTTP request headers outside the daemon's known set
+/// (`warn_once_or_info!("Unhandled HTTP header …")`), counted per header --
+/// a request carrying three unknown headers counts three; the log entry
+/// itself is debounced.
 ///
-/// Scope: only counts requests that traverse the upstream-relay path
-/// (cache miss or volatile revalidation). Cache hits served via sendfile
-/// look up headers by name and never trip this counter.
+/// Scope: hyper only, and only a request that starts a download in hyper's
+/// `serve_new_file_worker` (cache miss or volatile refetch). Cache hits and
+/// every splice-fetched request look up headers by name and never trip it.
 pub(crate) static UNHANDLED_REQUEST_HEADERS: Counter = Counter::new();
 
 /// Request-header reads that failed before any request was parsed, broken
@@ -285,9 +297,11 @@ pub(crate) static UNHANDLED_REQUEST_HEADERS: Counter = Counter::new();
 /// itself was malformed (oversized headers, garbage). Useful for separating
 /// "client went away" noise from genuine protocol abuse.
 ///
-/// Scope: only updated by the sendfile backend's manual header-read loop;
-/// in `cfg(not(feature = "sendfile"))` builds (non-default) hyper handles
-/// header parsing internally and these counters stay at 0.
+/// Scope: only updated by the sendfile backend's manual header-read loop.
+/// Hyper parses headers internally and counts nothing here: in
+/// `cfg(not(feature = "sendfile"))` builds (non-default) these counters stay
+/// at 0, and on a sendfile connection handed over to hyper for good (an
+/// HTTP/1.0 request, a request body) its later requests are not counted.
 pub(crate) static REQUEST_READ_PEER_DISCONNECT: Counter = Counter::new();
 pub(crate) static REQUEST_READ_PROTOCOL_ERROR: Counter = Counter::new();
 
@@ -301,7 +315,11 @@ pub(crate) static CONNECTED_CLIENTS_PEAK: Peak = Peak::new();
 pub(crate) static ACTIVE_UPSTREAM_DOWNLOADS_PEAK: Peak = Peak::new();
 pub(crate) static ACTIVE_CLIENT_DOWNLOADS_PEAK: Peak = Peak::new();
 
-/// Bytes delivered via Linux `sendfile(2)` zero-copy.
+/// Bytes delivered via Linux `sendfile(2)` zero-copy, whichever backend
+/// counted the request: besides the sendfile backend's own serves, a splice
+/// request's tail served to a demoted client and the already-cached prefix
+/// of a resumed splice download go out through `sendfile(2)` and are counted
+/// here, under a request counted in `REQUESTS_SPLICE`.
 pub(crate) static BYTES_SERVED_SENDFILE: Accumulator = Accumulator::new();
 /// Bytes delivered to the client by the splice proxy backend.  The bulk of
 /// these traverse Linux `splice(2)` zero-copy (`tee_and_splice`), but the
@@ -313,9 +331,11 @@ pub(crate) static BYTES_SERVED_SENDFILE: Accumulator = Accumulator::new();
 /// counted under `REQUESTS_SPLICE`.
 pub(crate) static BYTES_SERVED_SPLICE: Accumulator = Accumulator::new();
 /// Bytes delivered via plain userspace read/write copy on the hyper backend's
-/// cache-hit streaming-file path (`DeliveryStreamBody`).  Splice-path
-/// userspace writes are reported under `BYTES_SERVED_SPLICE` instead, since
-/// they are inseparable from the request's splice accounting.
+/// cache-hit streaming-file path (`CachedFileBody`, `Mechanism::Stream`).
+/// Counted per polled frame and published by `AccountedBody` when the body
+/// ends. Splice-path userspace writes are reported under
+/// `BYTES_SERVED_SPLICE` instead, since they are inseparable from the
+/// request's splice accounting.
 pub(crate) static BYTES_SERVED_COPY: Accumulator = Accumulator::new();
 /// Bytes streamed from an in-flight download via the hyper `ChannelBody`
 /// path (`serve_unfinished_file`): late joiners and the hyper client whose
@@ -325,9 +345,10 @@ pub(crate) static BYTES_SERVED_COPY: Accumulator = Accumulator::new();
 /// post-write splice/sendfile counters.
 pub(crate) static BYTES_SERVED_CHANNEL: Accumulator = Accumulator::new();
 
-/// Bytes proxied uncached. Counted at frame-poll time (no post-write hook in
-/// hyper's body model) — slightly overcounts on aborted clients vs. the
-/// post-write splice/sendfile counters.
+/// Bytes proxied uncached. Splice relays count after each client write;
+/// hyper counts per polled frame (no post-write hook in its body model) and
+/// publishes when the body ends (`AccountedBody`'s `Drop`) — slightly
+/// overcounting an aborted client against the post-write splice counts.
 pub(crate) static BYTES_SERVED_PASSTHROUGH: Accumulator = Accumulator::new();
 pub(crate) static REQUESTS_PASSTHROUGH: Counter = Counter::new();
 pub(crate) static SERVED_PASSTHROUGH: Counter = Counter::new();
@@ -413,9 +434,13 @@ pub(crate) static CACHE_MISSES: Counter = Counter::new();
 
 /// Per-delivery-mechanism triples. For each mechanism `X`, `REQUESTS_X`
 /// counts responses that started down that path (bumped before the
-/// response head is written, so a failed head write counts as started), `SERVED_X` the subset that
-/// completed, and `BYTES_SERVED_X` (above) their bytes. `SERVED_TOTAL` is the
-/// sum of the `SERVED_X` plus `SERVED_WEBUI`.
+/// response head is written, so a failed head write counts as started) and
+/// `SERVED_X` the subset that completed; both belong to the backend that
+/// answered the request. `BYTES_SERVED_X` (above) counts the bytes the
+/// mechanism itself shipped, which is not always the same request set: a
+/// splice request's demoted tail and resumed prefix are `sendfile(2)` bytes
+/// (see `BYTES_SERVED_SENDFILE`). `SERVED_TOTAL` is the sum of the
+/// `SERVED_X` plus `SERVED_WEBUI`.
 pub(crate) static REQUESTS_SENDFILE: Counter = Counter::new();
 pub(crate) static SERVED_SENDFILE: Counter = Counter::new();
 pub(crate) static REQUESTS_SPLICE: Counter = Counter::new();
@@ -428,10 +453,19 @@ pub(crate) static SERVED_COPY: Counter = Counter::new();
 pub(crate) static REQUESTS_CHANNEL: Counter = Counter::new();
 pub(crate) static SERVED_CHANNEL: Counter = Counter::new();
 
-/// Mirror responses that violated the HTTP contract: body exceeded or
-/// undershot the announced `Content-Length`, missing or mismatched
-/// `Content-Range`, missing `Content-Length` on a non-volatile fetch, or
-/// `206 Partial Content` returned without a Range request. Not a violation
+/// Mirror responses that violated the HTTP contract, counted once each where
+/// the violation is detected: an unparsable or oversized response head;
+/// framing headers that could be read two ways (`resolve_body_framing`);
+/// a body that over- or undershot the announced `Content-Length`, or
+/// chunked framing errors; body bytes behind the head beyond the declared
+/// length (`InconsistentBodyFraming`, including stray bytes after a 304);
+/// a 1xx interim head where a final one was due; a resumed 206 whose
+/// `Content-Length` disagrees with its `Content-Range` span; a missing
+/// `Content-Length` on a permanent-file fetch, or `Content-Length: 0` on
+/// any cached fetch; or `206 Partial Content` returned without a Range
+/// request. A `Content-Range` that does
+/// not match the resume offset is not counted: it is a `ResumeAnomaly`,
+/// answered by discarding the partial and refetching. Nor is a violation
 /// in the body of a response the proxy abandoned and only drains for
 /// connection reuse (splice's `UpstreamExchange::dispose`): that connection
 /// is just not pooled.
@@ -548,7 +582,8 @@ pub(crate) static HTTP_TIMEOUT_UPSTREAM_READ: Counter = Counter::new();
 /// Splice path: bumped when `tcp_connect` or the TLS handshake exceeds
 /// the configured timeout. Hyper path: bumped when `hyper-timeout`'s
 /// connect timeout fires (detected by walking the connect error source
-/// chain for an `io::ErrorKind::TimedOut`).
+/// chain for an `io::ErrorKind::TimedOut`). Also bumped when a CONNECT
+/// tunnel's upstream dial times out, in both backends.
 pub(crate) static HTTP_TIMEOUT_UPSTREAM_CONNECT: Counter = Counter::new();
 /// HTTP timeout firings: client failed to send request headers in time
 /// (slow-loris-shaped, or a stalled client between keep-alive requests).
@@ -559,25 +594,27 @@ pub(crate) static HTTP_TIMEOUT_UPSTREAM_CONNECT: Counter = Counter::new();
 /// fire on idle/slow-header clients, but it is not counted here -- it logs at
 /// debug level instead, so this counter stays at 0 on those builds.
 pub(crate) static HTTP_TIMEOUT_CLIENT_HEADER: Counter = Counter::new();
-/// HTTP timeout firings: client failed to drain the response body in time
-/// (slow reader, dropped link, or `min_download_rate` violation).
+/// HTTP timeout firings: client failed to drain the response body within
+/// `http_timeout` (slow reader, dropped link). A client falling below
+/// `min_download_rate` is not a timeout: it counts only in
+/// `RATE_LIMIT_CLIENT`.
 ///
 /// Scope: response-body writes via `write_all_to_stream(.., WritePhase::Body)`,
-/// every rated-write helper (`write_all_to_stream_rated`, `wait_socket_rated`),
-/// and the sendfile chunk loop. Hyper's internal-timer body delivery is not
-/// routed through these helpers and is not counted here. Header-write timeouts
-/// are tracked separately in `HTTP_TIMEOUT_CLIENT_HEADER_WRITE`.
+/// every rated-write helper (`write_all_to_stream_rated{,_counted}`,
+/// `wait_socket_rated`), and the sendfile chunk loop. Hyper's internal-timer
+/// body delivery is not routed through these helpers and is not counted
+/// here. Header-write timeouts are tracked separately in
+/// `HTTP_TIMEOUT_CLIENT_HEADER_WRITE`.
 pub(crate) static HTTP_TIMEOUT_CLIENT_BODY: Counter = Counter::new();
 /// HTTP timeout firings: client failed to drain a response-header (or other
 /// small fixed control) write in time. Distinct from
 /// `HTTP_TIMEOUT_CLIENT_HEADER`, which counts request-header *reads* that
 /// stalled before any request was parsed.
 ///
-/// Scope: header-only writes via `write_all_to_stream(.., WritePhase::Header)`
-/// — response headers, 304/416/error responses, and the splice path's
-/// upstream TLS-handshake control writes (the latter is a known scope leak
-/// since these bytes go upstream rather than to the client; the helper is
-/// shared).
+/// Scope: client writes of response heads and small proxy-generated
+/// responses (304/416/error responses, the tunnel's `200`), through
+/// `write_all_to_stream(.., WritePhase::Header)` and
+/// `write_all_to_stream_msg_more`.
 pub(crate) static HTTP_TIMEOUT_CLIENT_HEADER_WRITE: Counter = Counter::new();
 
 /// `max_upstream_downloads` saturation episodes — debounced (latched at cap,
@@ -592,7 +629,8 @@ pub(crate) static UPSTREAM_DOWNLOAD_REJECTED_CAP: Counter = Counter::new();
 /// `passthrough_limiter::admit` for every backend.
 pub(crate) static PASSTHROUGH_REJECTED_CAP: Counter = Counter::new();
 /// Highest number of concurrent passthrough relays since startup, sampled on
-/// every admission (capped or not).
+/// every successful admission, whether or not `max_passthrough_relays` caps
+/// them (a refused relay never counted as active).
 pub(crate) static PASSTHROUGH_ACTIVE_PEAK: Peak = Peak::new();
 
 /// Upstream connect attempts past a request's first, in both backends:
@@ -602,10 +640,14 @@ pub(crate) static PASSTHROUGH_ACTIVE_PEAK: Peak = Peak::new();
 /// `connect_upstream`).
 pub(crate) static UPSTREAM_RETRIES: Counter = Counter::new();
 
-/// Log-ring evictions due to overflow (raise `logstore_capacity` if non-zero).
+/// Log-ring evictions: the oldest entry dropped for a new one once the
+/// in-memory ring (`logstore_capacity` entries) is full. Non-zero on any
+/// daemon that has logged more than the ring holds, so it is no alarm;
+/// only its rate says how far back the web log page reaches.
 pub(crate) static LOGSTORE_EVICTIONS: Counter = Counter::new();
 
-/// Peak cache disk-quota utilization in basis points (10000 = 100%).
+/// Peak cache disk-quota utilization in basis points (10000 = 100%),
+/// clamped at 100%: an over-quota accounted size reads as 10000, not more.
 /// Only meaningful when `disk_quota` is configured; otherwise stays at 0.
 pub(crate) static CACHE_QUOTA_UTIL_PEAK_BPS: Peak = Peak::new();
 
@@ -651,7 +693,13 @@ pub(crate) static SCHEME_CACHE_REMOVED: Counter = Counter::new();
 /// indicates `SQLite` trouble worth investigating.
 pub(crate) static DB_OPERATION_FAILED: Counter = Counter::new();
 
-/// Active downloads that finished in `Aborted` state (rate-limit / failure).
+/// Registered downloads that ended aborted instead of committed: any failed
+/// download (an upstream failure in any phase -- connect, head, body,
+/// rate, protocol, body limit -- a cache I/O failure, an internal failure,
+/// a barrier dropped without a verdict) and a finished download its commit
+/// discarded (checksum mismatch, verify or rename failure). A download the
+/// originator declined (relayed status, quota, throttle, ...) is not an
+/// abort.
 pub(crate) static DOWNLOADS_ABORTED: Counter = Counter::new();
 /// Downloads that found their `.partial` path still claimed by an earlier
 /// download of the same file (`partial_claim`) and wrote into a scratch file
