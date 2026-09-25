@@ -22,6 +22,7 @@ use crate::humanfmt::HumanFmt;
 use crate::{
     deb_mirror::Mirror,
     error::{ErrorReport, is_peer_disconnect},
+    fs_open::count_cache_failure,
     log_once::{KeyedGate, Logged, Reported},
     metrics::{self, Counter},
     rate_checker::InsufficientRate,
@@ -398,7 +399,10 @@ impl CacheError {
     /// A cache-directory syscall failed: count it where it happened, then
     /// retain its path and type it. The counter's scope is stat/open/read/write
     /// failures, so a consistency check that finds the bytes wrong builds a
-    /// [`Self::invalid`] instead and leaves `CACHE_IO_FAILURE` alone.
+    /// [`Self::invalid`] instead and leaves `CACHE_IO_FAILURE` alone. An errno
+    /// that proves a non-regular file at the path (a symlink `O_NOFOLLOW`
+    /// refused, a directory) counts `CACHE_NON_REGULAR` instead
+    /// (`fs_open::count_cache_failure`).
     pub(crate) fn counted_io(operation: &'static str, path: &Path, error: io::Error) -> Self {
         #[derive(Debug, thiserror::Error)]
         #[error("`{}`", path.display())]
@@ -407,7 +411,7 @@ impl CacheError {
             source: io::Error,
         }
 
-        metrics::CACHE_IO_FAILURE.increment();
+        count_cache_failure(&error);
         Self::io(
             operation,
             io::Error::new(

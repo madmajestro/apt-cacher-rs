@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::fs_open::{hint_sequential_read, nofollow_nonblock_options, release_page_cache};
+use crate::fs_open::{
+    hint_sequential_read, is_non_regular_errno, nofollow_nonblock_options, release_page_cache,
+};
 use crate::index_parser::{HashAlgo, hash_open_file};
 use crate::metrics;
 use crate::verified_marker::{has_valid_marker, stamp};
@@ -32,6 +34,11 @@ fn verify_file_sync(path: &Path, algo: HashAlgo, expected: &[u8]) -> Verdict {
 
     let mut file = match nofollow_nonblock_options().read(true).open(path) {
         Ok(f) => f,
+        // A symlink swapped in since the scan: `O_NOFOLLOW` refuses it.
+        Err(err) if is_non_regular_errno(&err) => {
+            metrics::CACHE_NON_REGULAR.increment();
+            return Verdict::NonRegular;
+        }
         Err(err) => {
             metrics::CACHE_IO_FAILURE.increment();
             return Verdict::IoError(err);
@@ -201,6 +208,24 @@ mod tests {
             verify_file_sync(&missing, HashAlgo::Sha256, &[0u8; 32]),
             Verdict::IoError(_)
         ));
+    }
+
+    /// A symlink swapped in since the scan is refused by `O_NOFOLLOW`: a
+    /// non-regular entry, not an I/O failure.
+    #[test]
+    fn verify_file_sync_reports_a_symlink_as_non_regular() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"x").expect("write target");
+        let link = dir.path().join("cache.deb");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let non_regular = metrics::CACHE_NON_REGULAR.get();
+        let io_failure = metrics::CACHE_IO_FAILURE.get();
+        let verdict = verify_file_sync(&link, HashAlgo::Sha256, &[0u8; 32]);
+        assert!(matches!(verdict, Verdict::NonRegular), "{verdict:?}");
+        assert_eq!(metrics::CACHE_NON_REGULAR.get(), non_regular + 1);
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure);
     }
 
     #[test]

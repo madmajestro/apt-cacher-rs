@@ -41,7 +41,7 @@ use tracing::{debug, error, info};
 use crate::cache_layout::{CacheEntryKey, CacheEntryKeyRef, ConnectionDetails};
 use crate::cache_metadata::UpstreamMetadata;
 use crate::error::ErrorReport;
-use crate::fs_open::tokio_nofollow_options;
+use crate::fs_open::{count_cache_failure, tokio_nofollow_options};
 use crate::guards::CANCELLED_DOWNLOAD;
 use crate::humanfmt::HumanFmt;
 use crate::passthrough_limiter;
@@ -321,7 +321,7 @@ pub(crate) async fn await_serveable(
             .open(path)
             .await
             .inspect_err(|err| {
-                metrics::CACHE_IO_FAILURE.increment();
+                count_cache_failure(err);
                 error!(
                     "Failed to open {what} file `{}` for joining client {}; returning 500:  {}",
                     path.display(),
@@ -392,7 +392,7 @@ pub(crate) async fn await_serveable(
                         continue;
                     }
                     Err(err) => {
-                        metrics::CACHE_IO_FAILURE.increment();
+                        count_cache_failure(&err);
                         error!(
                             "Failed to open verifying file `{}` for joining client {}; returning 500:  {}",
                             path.display(),

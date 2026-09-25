@@ -448,7 +448,10 @@ pub(crate) static CACHE_IO_FAILURE: Counter = Counter::new();
 
 /// Cache entries observed to be non-regular non-directory files (FIFO,
 /// socket, device, symlink).  Bumped by serving paths (which then return
-/// 5xx), download paths (which abort the download), and every directory
+/// 5xx), download paths (which abort the download) -- including an open the
+/// entry itself failed: a symlink `O_NOFOLLOW` refuses (`ELOOP`), a
+/// directory opened for writing (`EISDIR`), a socket (`ENXIO`), classified
+/// by `fs_open::count_cache_failure` -- and every directory
 /// walk (`cache_walk.rs`, on sight): the startup scan and the dashboard
 /// leave such an entry in place, cleanup unlinks it wherever it walks
 /// (pool / flat / `dists/` / by-hash / `tmp/`).

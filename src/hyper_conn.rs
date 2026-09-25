@@ -63,8 +63,8 @@ use crate::{
         is_tls_certificate_rejection,
     },
     fs_open::{
-        CacheAccessFailure, hint_sequential_read, regular_file_metadata, tokio_nofollow_options,
-        touch_volatile_mtime,
+        CacheAccessFailure, count_cache_failure, hint_sequential_read, regular_file_metadata,
+        tokio_nofollow_options, touch_volatile_mtime,
     },
     global_cache_quota, global_config, global_verify_throttle, global_webif_hosts,
     guards::{Consequence, DownloadBarrier, InitBarrier, Settled},
@@ -2603,7 +2603,8 @@ pub(crate) async fn process_cache_request(
             serve_cache_miss(conn_details, req, cache_path, CacheMiss::NotFound, appstate).await
         }
         Err(err) => {
-            metrics::CACHE_IO_FAILURE.increment();
+            // A symlink or directory at the path is a non-regular entry.
+            count_cache_failure(&err);
             error!(
                 "Failed to open file `{}`; returning 500:  {}",
                 cache_path.display(),

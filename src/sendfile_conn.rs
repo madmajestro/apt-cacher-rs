@@ -71,7 +71,7 @@ use crate::{
     delivery::{Mechanism, Role, ServeOutcome, finish_cached_serve},
     error::{ErrorReport, is_expected_client_end, is_peer_disconnect},
     fs_open::{
-        CacheAccessFailure, hint_sequential_read, regular_file_metadata,
+        CacheAccessFailure, count_cache_failure, hint_sequential_read, regular_file_metadata,
         regular_file_metadata_typed, tokio_nofollow_options,
     },
     global_config, global_webif_hosts,
@@ -1275,7 +1275,8 @@ async fn try_sendfile_request(
                 break 'cache_lookup Err(CacheMiss::NotFound);
             }
             Err(err) => {
-                metrics::CACHE_IO_FAILURE.increment();
+                // A symlink or directory at the path is a non-regular entry.
+                count_cache_failure(&err);
                 error!(
                     "Failed to open cached file `{}` for client {client}; returning 500:  {}",
                     cache_path.display(),

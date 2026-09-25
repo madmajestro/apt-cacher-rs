@@ -99,6 +99,34 @@ pub(crate) async fn probe_dir(path: &Path, purpose: &'static str) -> std::io::Re
     }
 }
 
+/// Whether a failed syscall on a cache path failed because something other
+/// than a regular file sits there: a symlink `O_NOFOLLOW` refused (`ELOOP`),
+/// a directory opened for writing or read as a file (`EISDIR`), or a socket
+/// (`ENXIO`). That is a `CACHE_NON_REGULAR` anomaly -- the same fact an
+/// `fstat` of the opened descriptor or a cache walk reports -- not a
+/// `CACHE_IO_FAILURE`.
+///
+/// Decided on the raw errno, so it must see the syscall's own error: a
+/// wrapper built with `io::Error::new` answers `None` from `raw_os_error`.
+#[must_use]
+pub(crate) fn is_non_regular_errno(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(nix::libc::ELOOP | nix::libc::EISDIR | nix::libc::ENXIO)
+    )
+}
+
+/// Bump the one counter a failed cache-path syscall belongs to:
+/// `CACHE_NON_REGULAR` for [`is_non_regular_errno`], `CACHE_IO_FAILURE` for
+/// every other errno.
+pub(crate) fn count_cache_failure(err: &std::io::Error) {
+    if is_non_regular_errno(err) {
+        metrics::CACHE_NON_REGULAR.increment();
+    } else {
+        metrics::CACHE_IO_FAILURE.increment();
+    }
+}
+
 /// Marker for a cache-file access that failed and was already logged, with
 /// the matching `CACHE_IO_FAILURE` / `CACHE_NON_REGULAR` bump. Callers only
 /// map it to their transport's 500 - never log it a second time; the carried
@@ -355,6 +383,43 @@ mod tests {
             Some(nix::libc::ELOOP),
             "a refused symlink is recognized by ELOOP"
         );
+    }
+
+    /// A refused symlink and a directory opened for writing are non-regular
+    /// entries, counted as such; any other errno is a cache I/O failure.
+    #[test]
+    fn open_errnos_of_a_non_regular_entry_count_as_non_regular() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let link = planted_symlink(dir.path());
+        let symlink_err = nofollow_options()
+            .read(true)
+            .open(&link)
+            .expect_err("refused symlink");
+        let dir_err = nofollow_options()
+            .write(true)
+            .open(dir.path())
+            .expect_err("a directory cannot be opened for writing");
+        let missing_err = nofollow_options()
+            .read(true)
+            .open(dir.path().join("missing"))
+            .expect_err("missing file");
+        assert!(is_non_regular_errno(&symlink_err));
+        assert!(is_non_regular_errno(&dir_err));
+        assert!(!is_non_regular_errno(&missing_err));
+        // A wrapper hides the errno: classify before wrapping.
+        assert!(!is_non_regular_errno(&std::io::Error::new(
+            symlink_err.kind(),
+            "wrapped"
+        )));
+
+        let non_regular = metrics::CACHE_NON_REGULAR.get();
+        let io_failure = metrics::CACHE_IO_FAILURE.get();
+        count_cache_failure(&symlink_err);
+        let _counted = CacheError::counted_io("open cache file", &link, dir_err);
+        assert_eq!(metrics::CACHE_NON_REGULAR.get(), non_regular + 2);
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure);
+        count_cache_failure(&missing_err);
+        assert_eq!(metrics::CACHE_IO_FAILURE.get(), io_failure + 1);
     }
 
     /// The nonblock variant exists so an open of a FIFO or character device

@@ -51,6 +51,7 @@ use crate::{
     cache_paths::MirrorSite,
     cache_quota::QuotaReservation,
     error::ErrorReport,
+    fs_open::count_cache_failure,
     global_verify_throttle,
     humanfmt::HumanFmt,
     index_parser::StreamedDigest,
@@ -731,7 +732,8 @@ impl RenameBarrier {
     /// (the file now lives at `dest_path`), on a checksum mismatch the file is
     /// unlinked (its bytes are known-bad, resuming them cannot succeed), on a
     /// transient verify/rename failure the guard's `OnDrop::Keep` keeps it for
-    /// resumption. Rename failures are logged here (with `CACHE_IO_FAILURE`);
+    /// resumption. Rename failures are logged here (with `CACHE_IO_FAILURE`,
+    /// or `CACHE_NON_REGULAR` for a directory at the destination);
     /// mismatch and verify-IO failures are logged by `verify_and_rename`.
     pub(crate) async fn commit(
         mut self,
@@ -782,7 +784,11 @@ impl RenameBarrier {
             integrity::verify_and_rename(&plan, temp, reservation, lease).await
         {
             if let CommitError::Rename(io_err) = &err {
-                metrics::CACHE_IO_FAILURE.increment();
+                // A directory planted at the destination fails the rename
+                // with `EISDIR`: a non-regular entry, not a failed syscall.
+                // The inode-mismatch and dead-job errors carry no errno and
+                // stay `CACHE_IO_FAILURE`.
+                count_cache_failure(io_err);
                 error!(
                     "Failed to rename temp file `{}` to `{}`; leaving the download uncached:  {}",
                     plan.temp_path.display(),

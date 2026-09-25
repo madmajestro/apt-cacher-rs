@@ -15,7 +15,8 @@ use crate::cache_layout::ConnectionDetails;
 use crate::deb_mirror::Mirror;
 use crate::error::ErrorReport;
 use crate::fs_open::{
-    CacheAccessFailure, hint_sequential_read, regular_file_metadata, tokio_nofollow_options,
+    CacheAccessFailure, count_cache_failure, hint_sequential_read, regular_file_metadata,
+    tokio_nofollow_options,
 };
 use crate::humanfmt::HumanFmt;
 use crate::integrity::note_cached_index_touch;
@@ -167,7 +168,7 @@ async fn splice_cleanup_request(
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => {
-            metrics::CACHE_IO_FAILURE.increment();
+            count_cache_failure(&err);
             error!(
                 "splice cleanup: failed to open cached file `{}`; returning 500:  {}",
                 cache_path.display(),
