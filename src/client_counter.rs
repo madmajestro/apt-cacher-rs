@@ -85,7 +85,6 @@ impl ClientCounter {
             metrics::CONNECTION_REJECTED_GLOBAL_CAP.increment();
             return Err(ConnectionCap::Global(max));
         }
-        metrics::CONNECTED_CLIENTS_PEAK.update(current as u64);
 
         let per_ip = match max_per_ip {
             Some(max) => {
@@ -98,6 +97,10 @@ impl ClientCounter {
             }
             None => None,
         };
+        // Sampled only once both caps admitted the connection: a refused one
+        // held its reserved global slot for an instant but was never
+        // connected.
+        metrics::CONNECTED_CLIENTS_PEAK.update(current as u64);
         Ok(Self { per_ip })
     }
 }
@@ -172,6 +175,23 @@ mod tests {
         let again = ClientCounter::try_new(ip, Some(nonzero!(1)), None).expect("slot released");
         drop(again);
         assert_eq!(connected_clients(), before);
+    }
+
+    /// A connection the per-IP cap refuses never counted as connected, so it
+    /// cannot raise the connected-clients peak.
+    #[test]
+    fn per_ip_refusal_does_not_raise_the_connected_peak() {
+        let ip: IpAddr = "192.0.2.25".parse().expect("test address");
+        let admitted = ClientCounter::try_new(ip, Some(nonzero!(1)), None).expect("first admitted");
+        let peak = metrics::CONNECTED_CLIENTS_PEAK.get();
+        assert!(peak >= connected_clients() as u64);
+        assert!(ClientCounter::try_new(ip, Some(nonzero!(1)), None).is_err());
+        assert_eq!(
+            metrics::CONNECTED_CLIENTS_PEAK.get(),
+            peak,
+            "a refused connection must not sample the peak"
+        );
+        drop(admitted);
     }
 
     /// Without `max_connections_per_client_ip` the per-IP map is never
