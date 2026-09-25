@@ -220,6 +220,10 @@ async fn read_upstream_response_headers(
         search_offset = buf.len();
 
         if buf.len() > MAX_UPSTREAM_HEADER_SIZE {
+            // Counted here, like the parser's refusals in
+            // `send_and_read_headers`: every `HeadError::Protocol` is one
+            // `UPSTREAM_PROTOCOL_VIOLATION`, bumped where it was detected.
+            metrics::UPSTREAM_PROTOCOL_VIOLATION.increment();
             return Err(HeadError::Protocol(format!(
                 "upstream response header size of {} bytes exceeds {MAX_UPSTREAM_HEADER_SIZE} byte cap",
                 buf.len()

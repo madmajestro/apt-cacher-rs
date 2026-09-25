@@ -247,10 +247,6 @@ impl Logged {
     /// [`crate::warn_once_or_info_logged!`], where `fired` is that call site's
     /// own once-gate, so per-site flood control is unchanged from
     /// [`crate::warn_once_or_info!`].
-    #[cfg_attr(
-        not(any(feature = "splice", test)),
-        expect(dead_code, reason = "only splice's throw sites use the logged macro")
-    )]
     pub(crate) fn warn_once_or_info(
         fired: &'static std::sync::atomic::AtomicBool,
         args: std::fmt::Arguments<'_>,

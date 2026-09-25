@@ -325,9 +325,24 @@ pub(crate) static BYTES_SERVED_PASSTHROUGH: Accumulator = Accumulator::new();
 pub(crate) static REQUESTS_PASSTHROUGH: Counter = Counter::new();
 pub(crate) static SERVED_PASSTHROUGH: Counter = Counter::new();
 
-/// Splice-path upstream setup failures, TCP and TLS handshake respectively.
+/// Requests whose upstream connect failed for good: the TCP connect or TLS
+/// handshake still failed after the retries and the Auto-mode HTTPS-to-HTTP
+/// fallback, so the request was answered without an upstream response.
+/// Counted once per request, when its terminal failure is concluded
+/// (`transfer_error::UpstreamError::connect`), in every backend: a retried
+/// attempt or a fallback that ends up connected counts nothing here (the
+/// attempts are `UPSTREAM_RETRIES`, the connect timeouts
+/// `HTTP_TIMEOUT_UPSTREAM_CONNECT`).
 pub(crate) static UPSTREAM_CONNECT_FAILED: Counter = Counter::new();
-pub(crate) static UPSTREAM_TLS_FAILED: Counter = Counter::new();
+/// Requests whose upstream was connected but whose exchange failed before a
+/// response head arrived: a reset, an EOF before the header terminator, a
+/// read timeout, a failed request write. Counted once per request when its
+/// terminal failure is concluded (`transfer_error::UpstreamError::head_io` /
+/// `head_transport`), in every backend. A pooled connection that fails this
+/// way and is replaced by a fresh one is not terminal and counts only
+/// `POOL_MISS_FAILED`; an unparsable or refused head is an
+/// `UPSTREAM_PROTOCOL_VIOLATION` instead.
+pub(crate) static UPSTREAM_HEAD_FAILED: Counter = Counter::new();
 
 /// Splice clients demoted to ordinary cached-file delivery.
 pub(crate) static CLIENTS_DEMOTED: Counter = Counter::new();
@@ -421,11 +436,6 @@ pub(crate) static UPSTREAM_BODY_LIMIT: Counter = Counter::new();
 /// (both counters are bumped together at the reject site).
 pub(crate) static UPSTREAM_UNSOLICITED_206: Counter = Counter::new();
 
-/// Hyper-backend upstream request failures that aborted before any response
-/// headers were observed: TCP connect, TLS handshake, and post-connect
-/// framing/protocol errors are all aggregated here. Splice-path connect/TLS
-/// equivalents are `UPSTREAM_CONNECT_FAILED` / `UPSTREAM_TLS_FAILED`.
-pub(crate) static UPSTREAM_HYPER_REQUEST_FAILED: Counter = Counter::new();
 /// Hyper-backend upstream errors observed *after* response headers were
 /// received, while streaming the body (peer aborted / framing error).
 pub(crate) static UPSTREAM_HYPER_BODY_ERR: Counter = Counter::new();
@@ -513,7 +523,9 @@ pub(crate) static BYTES_TUNNELED_UPSTREAM_TO_CLIENT: Accumulator = Accumulator::
 /// (detected by walking the error source chain for an
 /// `io::ErrorKind::TimedOut`).
 pub(crate) static HTTP_TIMEOUT_UPSTREAM_READ: Counter = Counter::new();
-/// HTTP timeout firings: upstream TCP/TLS handshake.
+/// HTTP timeout firings: upstream TCP/TLS handshake, counted per attempt
+/// (a request whose retries all time out counts each of them, and once in
+/// `UPSTREAM_CONNECT_FAILED`).
 ///
 /// Splice path: bumped when `tcp_connect` or the TLS handshake exceeds
 /// the configured timeout. Hyper path: bumped when `hyper-timeout`'s

@@ -577,14 +577,14 @@ fn build_upstream_group(g: &mut Groups) {
             metrics::UPSTREAM_RETRIES.get(),
         );
         t.row_tip(
-            "Connect Failures (splice, TCP)",
-            "Splice-path upstream TCP setup failures.",
+            "Connect Failures",
+            "Requests whose upstream connect (TCP or TLS) failed for good, after the retries and the Auto-mode HTTPS-to-HTTP fallback. Counted once per request; a retried or fallen-back connect that succeeds counts nothing.",
             WarnNonzero(metrics::UPSTREAM_CONNECT_FAILED.get()),
         );
         t.row_tip(
-            "Connect Failures (splice, TLS)",
-            "Splice-path upstream TLS handshake failures.",
-            WarnNonzero(metrics::UPSTREAM_TLS_FAILED.get()),
+            "Head Failures",
+            "Requests whose upstream was connected but whose exchange failed before a response head arrived: reset, EOF, timeout or request write. A malformed head counts as a Protocol Violation instead.",
+            WarnNonzero(metrics::UPSTREAM_HEAD_FAILED.get()),
         );
         t.row_tip(
             "Pipe Resizes Refused (splice)",
@@ -700,7 +700,7 @@ fn build_upstream_group(g: &mut Groups) {
         );
         t.row_tip(
             "Protocol Violations",
-            "Mirror responses that broke the HTTP contract: body over- or under-ran the announced Content-Length, missing or mismatched Content-Range, missing Content-Length on a non-volatile fetch, or 206 returned without a Range request.",
+            "Mirror responses that broke the HTTP contract: an unparsable or oversized response head, body over- or under-ran the announced Content-Length, missing or mismatched Content-Range, missing Content-Length on a non-volatile fetch, or 206 returned without a Range request.",
             WarnNonzero(metrics::UPSTREAM_PROTOCOL_VIOLATION.get()),
         );
         t.row_tip(
@@ -712,11 +712,6 @@ fn build_upstream_group(g: &mut Groups) {
             "Unsolicited 206",
             "Mirror responses that returned 206 Partial Content for a request the proxy issued without a Range header. Rejected with 502 to avoid cache poisoning. A telemetry slice of Protocol Violations.",
             WarnNonzero(metrics::UPSTREAM_UNSOLICITED_206.get()),
-        );
-        t.row_tip(
-            "hyper Failures (pre-response)",
-            "Hyper-backend connect, TLS and request-framing failures, aggregated. Splice-path equivalents are reported separately.",
-            WarnNonzero(metrics::UPSTREAM_HYPER_REQUEST_FAILED.get()),
         );
         t.row_tip(
             "hyper Failures (body)",

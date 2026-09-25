@@ -660,9 +660,7 @@ pub(super) async fn connect_upstream(
             let tcp = tcp_connect(host, mirror_port(mirror, true))
                 .await
                 .map_err(ConnectError::transient)?;
-            let tls = tls_connect(tcp, host).await.inspect_err(|_| {
-                metrics::UPSTREAM_TLS_FAILED.increment();
-            })?;
+            let tls = tls_connect(tcp, host).await?;
             Ok((UpstreamConn::Tls(tls), Scheme::Https))
         }
         None => {
@@ -682,7 +680,6 @@ pub(super) async fn connect_upstream(
                         if err.certificate_rejected
                             && scheme_cache::https_verified_before(mirror.into()) =>
                     {
-                        metrics::UPSTREAM_TLS_FAILED.increment();
                         debug!(
                             "splice proxy: TLS certificate of {} rejected although HTTPS to it verified before; not falling back to HTTP",
                             mirror.format_authority()
@@ -694,7 +691,6 @@ pub(super) async fn connect_upstream(
                         // the point of Auto mode, so even a permanent TLS failure
                         // (no TLS on the port, an unparsable server name, a
                         // certificate for another host) must not abort it.
-                        metrics::UPSTREAM_TLS_FAILED.increment();
                         if err.certificate_rejected {
                             warn_once_or_info!(
                                 "splice proxy: HTTPS certificate of host {} failed verification; falling back to plain HTTP (list the host in `http_only_mirrors` to silence this, or fix the mirror's certificate):  {}",
@@ -735,12 +731,9 @@ pub(super) async fn tcp_connect(host: &str, port: u16) -> std::io::Result<TcpStr
     tokio::time::timeout(http_timeout, TcpStream::connect((host, port)))
         .await
         .map_err(|_timeout @ tokio::time::error::Elapsed { .. }| {
-            // A connect timeout is a TCP setup failure too: classify it under
-            // both the timeout-specific counter and the broad connect-failed
-            // counter so dashboards summing UPSTREAM_CONNECT_FAILED see all
-            // TCP setup losses, not just non-timeout errors.
+            // Per attempt; a request whose connect fails for good is counted
+            // once, in `UPSTREAM_CONNECT_FAILED`, when its failure concludes.
             metrics::HTTP_TIMEOUT_UPSTREAM_CONNECT.increment();
-            metrics::UPSTREAM_CONNECT_FAILED.increment();
             std::io::Error::new(
                 ErrorKind::TimedOut,
                 format!(
@@ -750,7 +743,6 @@ pub(super) async fn tcp_connect(host: &str, port: u16) -> std::io::Result<TcpStr
             )
         })?
         .map_err(|err| {
-            metrics::UPSTREAM_CONNECT_FAILED.increment();
             std::io::Error::new(
                 err.kind(),
                 format!("TCP connect failed:  {err}"),

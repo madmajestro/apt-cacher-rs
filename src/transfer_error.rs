@@ -264,7 +264,9 @@ impl UpstreamError {
 
     /// The terminal end of the connect-retry loop: `attempts` and the reason
     /// that stopped it are part of the failure, not of the call site, so every
-    /// backend renders them identically.
+    /// backend renders them identically. Counts `UPSTREAM_CONNECT_FAILED` once
+    /// concluded -- once per request, never per attempt, so a retried
+    /// connect or an Auto-mode fallback that ends up connected counts nothing.
     pub(crate) fn connect(
         operation: &'static str,
         error: io::Error,
@@ -275,13 +277,13 @@ impl UpstreamError {
             operation,
             UpstreamPhase::Connect { attempts, stop },
             Cause::Io(error),
-            None,
+            Some(&metrics::UPSTREAM_CONNECT_FAILED),
         )
     }
 
     /// Only a backend reading its response head off a raw socket produces an
     /// `io::Error` for the head phase; hyper's head failures are
-    /// `Self::head_transport`.
+    /// `Self::head_transport`. Counts `UPSTREAM_HEAD_FAILED` once concluded.
     #[cfg_attr(
         not(any(feature = "splice", test)),
         expect(
@@ -290,9 +292,15 @@ impl UpstreamError {
         )
     )]
     pub(crate) fn head_io(operation: &'static str, error: io::Error) -> Self {
-        Self::new(operation, UpstreamPhase::Head, Cause::Io(error), None)
+        Self::new(
+            operation,
+            UpstreamPhase::Head,
+            Cause::Io(error),
+            Some(&metrics::UPSTREAM_HEAD_FAILED),
+        )
     }
 
+    /// Counts `UPSTREAM_HEAD_FAILED` once concluded, like [`Self::head_io`].
     #[cfg(feature = "hyper")]
     pub(crate) fn head_transport(
         operation: &'static str,
@@ -302,12 +310,14 @@ impl UpstreamError {
             operation,
             UpstreamPhase::Head,
             Cause::Transport(Box::new(error)),
-            None,
+            Some(&metrics::UPSTREAM_HEAD_FAILED),
         )
     }
 
     /// A head the transport delivered intact but HTTP could not accept: the
     /// reason is the whole failure, so there is no source error under it.
+    /// Counts nothing here: every such head is counted in
+    /// `UPSTREAM_PROTOCOL_VIOLATION` where it was parsed.
     pub(crate) fn head_protocol(reason: impl Into<String>) -> Self {
         Self::new(
             "upstream response head",
@@ -339,7 +349,6 @@ impl UpstreamError {
     /// delivery sink (a pass-through relay's connect, a cleanup fetch, a
     /// connection-reuse drain): count it, then log it through `log`, whose
     /// [`Logged`] proves the line was written.
-    #[cfg(feature = "splice")]
     pub(crate) fn conclude(self, log: impl FnOnce(&Self) -> Logged) -> Reported<Self> {
         self.record_terminal();
         log(&self).with(self)
@@ -430,7 +439,7 @@ impl InternalError {
         Self::new(operation, Cause::Invalid(reason.into()))
     }
 
-    #[cfg(feature = "splice")]
+    #[cfg(any(feature = "splice", feature = "hyper"))]
     pub(crate) fn transport(
         operation: &'static str,
         error: impl Error + Send + Sync + 'static,
@@ -980,6 +989,43 @@ mod tests {
         DeliveryFailure::Cancelled.record_terminal();
         assert_eq!(metrics::RATE_LIMIT_CLIENT.get(), before_client + 1);
         assert_eq!(metrics::CLIENT_DISCONNECTED_MID_BODY.get(), before_disc + 1);
+    }
+
+    /// A connect or head failure counts once, when concluded -- never at
+    /// construction (a retried attempt builds none, a pooled-connection
+    /// failure replaced by a fresh connect is dropped unconcluded).
+    #[test]
+    fn upstream_pre_response_failures_count_once_when_concluded() {
+        let connect_before = metrics::UPSTREAM_CONNECT_FAILED.get();
+        let head_before = metrics::UPSTREAM_HEAD_FAILED.get();
+        let protocol_before = metrics::UPSTREAM_PROTOCOL_VIOLATION.get();
+
+        let connect = UpstreamError::connect(
+            "connect upstream",
+            io::ErrorKind::ConnectionRefused.into(),
+            3,
+            RetryLimit::Attempts.into(),
+        );
+        let head =
+            UpstreamError::head_io("read upstream head", io::ErrorKind::UnexpectedEof.into());
+        let dropped = UpstreamError::head_io("pooled head", io::ErrorKind::ConnectionReset.into());
+        drop(dropped);
+        assert_eq!(metrics::UPSTREAM_CONNECT_FAILED.get(), connect_before);
+        assert_eq!(metrics::UPSTREAM_HEAD_FAILED.get(), head_before);
+
+        let _reported = connect.conclude(|_| Logged::at(Severity::Info, format_args!("connect")));
+        assert_eq!(metrics::UPSTREAM_CONNECT_FAILED.get(), connect_before + 1);
+        assert_eq!(metrics::UPSTREAM_HEAD_FAILED.get(), head_before);
+
+        DownloadFailure::Upstream(head).record_terminal();
+        assert_eq!(metrics::UPSTREAM_HEAD_FAILED.get(), head_before + 1);
+        assert_eq!(metrics::UPSTREAM_CONNECT_FAILED.get(), connect_before + 1);
+
+        // Counted where the head was parsed, never again at conclude.
+        let _reported = UpstreamError::head_protocol("bad head")
+            .conclude(|_| Logged::at(Severity::Info, format_args!("protocol")));
+        assert_eq!(metrics::UPSTREAM_PROTOCOL_VIOLATION.get(), protocol_before);
+        assert_eq!(metrics::UPSTREAM_HEAD_FAILED.get(), head_before + 1);
     }
 
     #[test]

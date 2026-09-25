@@ -94,7 +94,7 @@ use crate::{
         UpstreamHead, plan_download, plan_fresh_download, resolve_body_framing,
     },
     upstream_retry::{self, RetryStop},
-    warn_once_or_debug, warn_once_or_info,
+    warn_once_or_debug, warn_once_or_info, warn_once_or_info_logged,
     web::serve_web_interface,
 };
 #[cfg(feature = "tls_rustls")]
@@ -135,6 +135,11 @@ enum RequestError {
     /// [`resolve_body_framing`] refuses: the reason is the whole failure.
     #[error("{0}")]
     Framing(String),
+    /// A response head hyper's parser refused (malformed, or larger than its
+    /// read buffer): the upstream's protocol violation, as splice reports the
+    /// same head, not a transport failure.
+    #[error(transparent)]
+    MalformedHead(hyper_util::client::legacy::Error),
 }
 
 /// The fields of a [`RequestFailure`], separated only so the payload can be
@@ -218,23 +223,46 @@ impl RequestFailure {
     /// happened once a connection was up, so it is a head-phase transport
     /// failure -- or a head-phase protocol failure for a refused framing,
     /// as splice reports the same head. Both phases are once-gated by the
-    /// download runner.
-    pub(crate) fn into_upstream(self, operation: &'static str) -> UpstreamError {
+    /// download runner. A URI this proxy failed to rebuild never reached
+    /// the mirror: an internal failure, which blames neither the mirror nor
+    /// the head phase.
+    pub(crate) fn into_failure(self, operation: &'static str) -> DownloadFailure {
         let FailedRequest {
             error,
             uri,
             attempts,
             limit,
         } = *self.0;
-        match (error, limit) {
+        let upstream = match (error, limit) {
+            (RequestError::InvalidUri(error), _) => {
+                return InternalError::transport("rebuild the upstream request URI", error).into();
+            }
             (RequestError::Framing(reason), _) => UpstreamError::head_protocol(reason),
-            (error, Some(limit)) => {
+            (RequestError::MalformedHead(error), _) => {
+                UpstreamError::head_protocol(ErrorReport(&error).to_string())
+            }
+            (error @ RequestError::Transport(_), Some(limit)) => {
                 UpstreamError::connect(operation, std::io::Error::other(error), attempts, limit)
             }
-            (error, None) => UpstreamError::head_transport(operation, error),
-        }
-        .with_target(uri.to_string())
+            (error @ RequestError::Transport(_), None) => {
+                UpstreamError::head_transport(operation, error)
+            }
+        };
+        upstream.with_target(uri.to_string()).into()
     }
+}
+
+/// Whether hyper's HTTP parser refused the response head (malformed, or past
+/// its read buffer), as opposed to a transport that failed under it.
+fn is_head_parse_error(err: &hyper_util::client::legacy::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = cur {
+        if let Some(hyper_err) = e.downcast_ref::<hyper::Error>() {
+            return hyper_err.is_parse();
+        }
+        cur = e.source();
+    }
+    false
 }
 
 /// On success the request `Parts` are handed back alongside the response —
@@ -317,10 +345,7 @@ pub(crate) async fn request_with_retry(
         // `auth` is last used above; NLL ends its borrow so `parts.uri` can be replaced.
         parts.uri = match Uri::from_parts(uri_parts) {
             Ok(uri) => uri,
-            Err(err) => {
-                metrics::UPSTREAM_HYPER_REQUEST_FAILED.increment();
-                return Err(RequestFailure::invalid_uri(err, parts.uri, 0));
-            }
+            Err(err) => return Err(RequestFailure::invalid_uri(err, parts.uri, 0)),
         };
         // Counted only once the upgrade is really attempted, so the
         // ATTEMPTED == SUCCEEDED + REVERTED + FAILED identity holds.
@@ -391,7 +416,15 @@ pub(crate) async fn request_with_retry(
                     if is_io_timed_out_in_chain(&err) {
                         metrics::HTTP_TIMEOUT_UPSTREAM_READ.increment();
                     }
-                    metrics::UPSTREAM_HYPER_REQUEST_FAILED.increment();
+                    // Counted where detected, like the framing refusal above
+                    // and splice's head parser; every other failure here is
+                    // counted once its owner concludes it.
+                    let error = if is_head_parse_error(&err) {
+                        metrics::UPSTREAM_PROTOCOL_VIOLATION.increment();
+                        RequestError::MalformedHead(err)
+                    } else {
+                        err.into()
+                    };
                     if probe.is_probing() {
                         // Non-connect transport error (e.g. read timeout,
                         // request framing) terminates the request without
@@ -401,7 +434,7 @@ pub(crate) async fn request_with_retry(
                         metrics::HTTPS_UPGRADE_FAILED.increment();
                     }
                     return Err(RequestFailure::new(FailedRequest {
-                        error: err.into(),
+                        error,
                         uri: parts.uri,
                         attempts: backoff.attempt(),
                         limit: None,
@@ -447,7 +480,6 @@ pub(crate) async fn request_with_retry(
                         parts.uri = match Uri::from_parts(uri_parts) {
                             Ok(uri) => uri,
                             Err(err) => {
-                                metrics::UPSTREAM_HYPER_REQUEST_FAILED.increment();
                                 metrics::HTTPS_UPGRADE_FAILED.increment();
                                 return Err(RequestFailure::invalid_uri(err, parts.uri, attempt));
                             }
@@ -468,7 +500,6 @@ pub(crate) async fn request_with_retry(
                         backoff.next_retry(coarsetime::Instant::now())
                     };
                     let Some(delay) = next else {
-                        metrics::UPSTREAM_HYPER_REQUEST_FAILED.increment();
                         if probe.is_probing() {
                             // Terminal connect failure while still probing:
                             // in Always mode the revert branch above is gated
@@ -567,17 +598,34 @@ pub(crate) async fn request_with_retry(
 /// transport reason as an `http::Extensions` value so an internal caller (cleanup)
 /// can recover it instead of seeing only the laundered status. Real clients ignore
 /// the extension (it is never serialised to the wire). Registered downloads
-/// report through their guard; this adapter owns unregistered passthrough failures.
+/// report through their guard; this adapter owns unregistered passthrough
+/// failures, so it concludes them: counted once, like a download's.
 #[must_use]
-fn upstream_error_response(err: &RequestFailure) -> Response<ProxyCacheBody> {
-    warn_once_or_info!(
-        "Upstream request to {} failed; returning 502:  {}",
-        err.uri(),
-        ErrorReport(err)
-    );
+fn upstream_error_response(err: RequestFailure) -> Response<ProxyCacheBody> {
+    let uri = err.uri().to_string();
+    let err = match err.into_failure("request upstream response") {
+        DownloadFailure::Upstream(err) => err,
+        failure @ (DownloadFailure::Cache(_)
+        | DownloadFailure::Internal(_)
+        | DownloadFailure::Cancelled) => {
+            let (status, body) = failure.response_parts();
+            error!(
+                "Failed to request `{uri}` upstream; returning {}:  {}",
+                status.as_u16(),
+                ErrorReport(&failure)
+            );
+            return quick_response(status, body);
+        }
+    };
+    let reported = err.conclude(|err| {
+        warn_once_or_info_logged!(
+            "Upstream request failed; returning 502:  {}",
+            ErrorReport(err)
+        )
+    });
     let mut response = quick_response(StatusCode::BAD_GATEWAY, "Upstream Error");
     response.extensions_mut().insert(UpstreamFetchError {
-        reason: ErrorReport(err).to_string(),
+        reason: ErrorReport(reported.get()).to_string(),
     });
     response
 }
@@ -1936,7 +1984,7 @@ async fn serve_new_file_worker(
     let mut fwd_response = match request_with_retry(&appstate.https_client, fwd_request).await {
         Ok((r, _parts)) => r,
         Err(error) => {
-            return Err(error.into_upstream("request upstream response").into());
+            return Err(error.into_failure("request upstream response"));
         }
     };
 
@@ -1981,7 +2029,7 @@ async fn serve_new_file_worker(
                 match request_with_retry(&appstate.https_client, redirected_request).await {
                     Ok((r, _parts)) => r,
                     Err(error) => {
-                        return Err(error.into_upstream("request upstream response").into());
+                        return Err(error.into_failure("request upstream response"));
                     }
                 };
 
@@ -2089,7 +2137,7 @@ async fn serve_new_file_worker(
                 {
                     Ok((r, _parts)) => r,
                     Err(error) => {
-                        return Err(error.into_upstream("request upstream response").into());
+                        return Err(error.into_failure("request upstream response"));
                     }
                 };
                 head = UpstreamHead::from_response(&fwd_response);
@@ -2987,7 +3035,7 @@ async fn pre_process_client_request(
     let (fwd_response, mut parts) =
         match request_with_retry(&appstate.https_client, fwd_request).await {
             Ok(rp) => rp,
-            Err(err) => return upstream_error_response(&err),
+            Err(err) => return upstream_error_response(err),
         };
     let request_path = parts.uri.path().to_owned();
 
@@ -3037,7 +3085,7 @@ async fn pre_process_client_request(
             let redirected_response =
                 match request_with_retry(&appstate.https_client, redirected_request).await {
                     Ok((r, _parts)) => r,
-                    Err(err) => return upstream_error_response(&err),
+                    Err(err) => return upstream_error_response(err),
                 };
 
             trace!("Redirected response: {redirected_response:?}");
@@ -3410,6 +3458,29 @@ mod tests {
             std::io::ErrorKind::ConnectionReset,
         )));
         assert!(accounted_body_failure(&socket).is_none());
+    }
+
+    /// A URI this proxy failed to rebuild never reached the mirror: an
+    /// internal failure, not a head-phase one that would count
+    /// `UPSTREAM_HEAD_FAILED` and an unreachable fault against the mirror.
+    #[test]
+    fn an_unrebuildable_uri_is_an_internal_failure() {
+        use super::RequestFailure;
+        use crate::transfer_error::DownloadFailure;
+
+        let mut parts = http::uri::Parts::default();
+        parts.scheme = Some(http::uri::Scheme::HTTPS);
+        let error = Uri::from_parts(parts).expect_err("a scheme without an authority");
+        let uri = Uri::from_static("http://deb.example.org/debian/pool/p.deb");
+        let failure = RequestFailure::invalid_uri(error, uri, 1).into_failure("request upstream");
+        assert!(
+            matches!(failure, DownloadFailure::Internal(_)),
+            "{failure:?}"
+        );
+        assert_eq!(
+            failure.response_parts(),
+            (http::StatusCode::INTERNAL_SERVER_ERROR, "Download Aborted")
+        );
     }
 
     /// One `buffer_size` frame must stay below the limit, or hyper flushes
