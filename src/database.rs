@@ -1441,6 +1441,9 @@ impl Database {
     }
 
     /// Delete mirror rows by id together with every row referencing them.
+    /// A running daemon calls this only through
+    /// `database_task::delete_mirrors`, which keeps the DB task's mirror-id
+    /// cache in step.
     pub(crate) async fn delete_mirrors(&self, ids: &[i64]) -> Result<(), Error> {
         let mut tx = self.conn.begin().await?;
 

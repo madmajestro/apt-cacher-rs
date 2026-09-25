@@ -49,6 +49,13 @@ pub(crate) enum DatabaseCommand {
     /// Round-trips the queue so the healthcheck learns the DB task is alive
     /// and draining; the reply carries the probe query's own result.
     Ping(tokio::sync::oneshot::Sender<Result<(), sqlx::Error>>),
+    /// Delete `mirrors_v2` rows (and every row referencing them) inside the
+    /// task that owns the mirror-id cache; see [`delete_mirrors`]. Replies
+    /// with the ids it kept.
+    DeleteMirrors(
+        Vec<i64>,
+        tokio::sync::oneshot::Sender<Result<Vec<i64>, sqlx::Error>>,
+    ),
 }
 
 pub(crate) static DB_TASK_QUEUE_SENDER: OnceLock<tokio::sync::mpsc::Sender<DatabaseCommand>> =
@@ -79,6 +86,25 @@ pub(crate) async fn send_db_command(cmd: DatabaseCommand) {
         return;
     }
     record_queue_depth(tx);
+}
+
+/// Delete mirror rows by id, with every row referencing them.
+///
+/// Routed through the DB task rather than run against the database
+/// directly: the task caches `Mirror -> id` for the process lifetime, so a
+/// row deleted behind its back would keep resolving to the dead id and
+/// every later delivery, download and origin of that mirror would be
+/// written against a row that no longer exists. The task evicts the ids in
+/// the same step as the delete.
+///
+/// An id with a row still staged is kept, not deleted: the staged row
+/// proves the mirror was used after the caller judged it unused, and
+/// deleting would drop that row along with the mirror. Returns the ids kept
+/// that way, or `PoolClosed` when the task is already gone (shutdown).
+pub(crate) async fn delete_mirrors(ids: Vec<i64>) -> Result<Vec<i64>, sqlx::Error> {
+    let (reply, received) = tokio::sync::oneshot::channel();
+    send_db_command(DatabaseCommand::DeleteMirrors(ids, reply)).await;
+    received.await.unwrap_or(Err(sqlx::Error::PoolClosed))
 }
 
 /// Sample the channel depth into `DB_QUEUE_DEPTH_PEAK`.
@@ -143,6 +169,19 @@ impl BatchBuffers {
     fn len(&self) -> usize {
         self.deliveries.len() + self.downloads.len() + self.origins.len()
     }
+
+    /// Whether a row of mirror `id` waits for the next flush: the mirror was
+    /// used since whoever wants to delete it last looked.
+    fn stages_mirror(&self, id: i64) -> bool {
+        let Self {
+            deliveries,
+            downloads,
+            origins,
+        } = self;
+        deliveries.iter().any(|row| row.mirror_id == id)
+            || downloads.iter().any(|row| row.mirror_id == id)
+            || origins.iter().any(|row| row.mirror_id == id)
+    }
 }
 
 fn now_unix() -> i64 {
@@ -201,7 +240,7 @@ async fn resolve_mirror_id(
 
 /// Stage a command into the batch buffers, resolving the mirror id first.
 /// Errors during mirror resolution are logged and the command is dropped.
-/// The Ping arm is a pass-through: no mirror resolution, replies inline.
+/// The Ping and `DeleteMirrors` arms run at once and reply inline.
 async fn stage(
     db: &Database,
     cache: &mut HashMap<Mirror, CachedMirror>,
@@ -301,6 +340,25 @@ async fn stage(
             // stopped waiting.
             if reply.send(result).is_err() {
                 debug!("Healthcheck ping requester vanished before reply");
+            }
+        }
+        DatabaseCommand::DeleteMirrors(ids, reply) => {
+            // A staged row is newer than the caller's "unused" verdict:
+            // keep that mirror, and its row flushes as usual.
+            let (kept, gone): (Vec<i64>, Vec<i64>) =
+                ids.into_iter().partition(|&id| buf.stages_mirror(id));
+            // The requester logs and counts a failure.
+            let result = if gone.is_empty() {
+                Ok(())
+            } else {
+                db.delete_mirrors(&gone).await
+            };
+            if result.is_ok() {
+                cache.retain(|_, entry| !gone.contains(&entry.id));
+                metrics::DB_MIRROR_CACHE_ENTRIES.set(cache.len() as u64);
+            }
+            if reply.send(result.map(|()| kept)).is_err() {
+                debug!("Mirror-row deletion requester vanished before reply");
             }
         }
     }
@@ -720,6 +778,91 @@ mod tests {
             .await
             .expect("shutdown timeout")
             .expect("db task");
+    }
+
+    /// A mirror row deleted by cleanup must not keep resolving from the
+    /// mirror-id cache: a later transfer of that mirror re-creates the row
+    /// instead of being written against the dead id.
+    #[tokio::test]
+    async fn deleted_mirror_rows_leave_the_mirror_id_cache() {
+        let fixture = Fixture::new().await;
+        let (tx, rx) = mpsc::channel(128);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Every row flushes at once, so nothing is staged at the delete.
+        let task = fixture.spawn(rx, shutdown_rx, 1, StdDuration::from_secs(3600));
+        let old_id = seeded_mirror_id(&fixture).await;
+
+        tx.send(transfer(0)).await.expect("send flushed transfer");
+        let kept = delete(&tx, old_id).await;
+        assert!(kept.is_empty(), "nothing staged, so nothing kept: {kept:?}");
+
+        tx.send(transfer(1))
+            .await
+            .expect("send transfer after delete");
+        shutdown_tx.send(true).expect("shutdown");
+        timeout(TEST_TIMEOUT, task)
+            .await
+            .expect("shutdown timeout")
+            .expect("db task");
+
+        let ids = fixture.database.load_all_mirror_ids().await.expect("ids");
+        assert_eq!(ids.len(), 1, "the mirror row was re-created once");
+        assert_ne!(ids.first().expect("asserted above").0, old_id);
+        // Only the post-delete transfer (index 1, size 2) survives, recorded
+        // against the new row; the first went with the deleted mirror.
+        assert_eq!(fixture.transfers().await, (1, 2));
+    }
+
+    /// A row staged for a mirror cleanup wants to delete proves the mirror
+    /// was used after cleanup judged it unused: the mirror is kept, reported
+    /// back, and the row is written against it.
+    #[tokio::test]
+    async fn a_mirror_with_staged_rows_is_kept() {
+        let fixture = Fixture::new().await;
+        let (tx, rx) = mpsc::channel(128);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Staged, not flushed (the interval is an hour away).
+        let task = fixture.spawn(rx, shutdown_rx, 4096, StdDuration::from_secs(3600));
+        let old_id = seeded_mirror_id(&fixture).await;
+
+        tx.send(transfer(0)).await.expect("send staged transfer");
+        assert_eq!(delete(&tx, old_id).await, vec![old_id]);
+
+        shutdown_tx.send(true).expect("shutdown");
+        timeout(TEST_TIMEOUT, task)
+            .await
+            .expect("shutdown timeout")
+            .expect("db task");
+
+        let ids = fixture.database.load_all_mirror_ids().await.expect("ids");
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.first().expect("asserted above").0, old_id);
+        assert_eq!(fixture.transfers().await, (1, 1));
+    }
+
+    async fn seeded_mirror_id(fixture: &Fixture) -> i64 {
+        fixture
+            .database
+            .load_all_mirror_ids()
+            .await
+            .expect("mirror ids")
+            .into_iter()
+            .next()
+            .expect("seeded mirror")
+            .0
+    }
+
+    /// Delete mirror `id` through the task; the ids it kept.
+    async fn delete(tx: &mpsc::Sender<DatabaseCommand>, id: i64) -> Vec<i64> {
+        let (reply, received) = oneshot::channel();
+        tx.send(DatabaseCommand::DeleteMirrors(vec![id], reply))
+            .await
+            .expect("send delete");
+        timeout(TEST_TIMEOUT, received)
+            .await
+            .expect("delete timeout")
+            .expect("reply")
+            .expect("delete")
     }
 
     async fn ping(tx: &mpsc::Sender<DatabaseCommand>) {

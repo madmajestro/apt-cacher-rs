@@ -30,6 +30,7 @@ use crate::{
     cache_paths::CachePaths,
     config::{CacheHost, Config},
     database::Database,
+    database_task,
     deb_mirror::{Mirror, derive_nested_paths},
     error::ErrorReport,
     global_cache_quota, global_config,
@@ -105,23 +106,32 @@ async fn prune_stale_rows(database: &Database, config: &Config) {
         let has_tree = cache_tree_exists(&paths.mirror_dir(site))
             || cache_tree_exists(&paths.flat_root(site.host, site.port));
         if !has_tree {
-            info!(
-                "Removing mirror row {} without origins or cached files",
-                Mirror::from(orphan.entry)
-            );
-            gone.push(orphan.id);
+            gone.push((orphan.id, Mirror::from(orphan.entry)));
         }
     }
     if gone.is_empty() {
         return;
     }
-    if let Err(err) = database.delete_mirrors(&gone).await {
-        metrics::DB_OPERATION_FAILED.increment();
-        error!(
-            "Failed to remove {} mirror rows without origins or cached files; retaining them until the next cleanup run:  {}",
-            gone.len(),
-            ErrorReport(&err)
-        );
+    let count = gone.len();
+    let kept = match database_task::delete_mirrors(gone.iter().map(|&(id, _)| id).collect()).await {
+        Ok(kept) => kept,
+        Err(err) => {
+            metrics::DB_OPERATION_FAILED.increment();
+            error!(
+                "Failed to remove {count} mirror rows without origins or cached files; retaining them until the next cleanup run:  {}",
+                ErrorReport(&err)
+            );
+            return;
+        }
+    };
+    for (id, mirror) in gone {
+        if kept.contains(&id) {
+            info!(
+                "Keeping mirror row {mirror} without origins or cached files; it was used during this cleanup run"
+            );
+        } else {
+            info!("Removed mirror row {mirror} without origins or cached files");
+        }
     }
 }
 
